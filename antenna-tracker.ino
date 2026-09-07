@@ -3,7 +3,7 @@
 #include <TinyGPS++.h>
 #include <HardwareSerial.h>
 #include <math.h>
-#include <mavlink.h>
+#include <MAVLink.h>
 
 // ==================== CONFIGURATION ====================
 // WiFi Configuration for ELRS Backpack
