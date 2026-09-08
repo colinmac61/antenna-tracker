@@ -7,8 +7,8 @@
 
 // ==================== CONFIGURATION ====================
 // WiFi Configuration for ELRS Backpack
-const char* ssid = "ELRS_BACKPACK_SSID";        // Change to your ELRS backpack SSID
-const char* password = "ELRS_PASSWORD";          // Change to your ELRS backpack password
+const char* ssid = "ExpressLRS TX Backpack ABFA86";        // Change to your ELRS backpack SSID
+const char* password = "expresslrs";          // Change to your ELRS backpack password
 const int udp_port = 14550;                      // MAVLink UDP port
 
 // GPIO Pins for Servos
@@ -64,8 +64,8 @@ void setup() {
   Serial.println("Initializing systems...");
   
   // Initialize GPS Serial
-  SerialGPS.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-  Serial.println("[GPS] Serial initialized at 9600 baud");
+  SerialGPS.begin(115200, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  Serial.println("[GPS] Serial initialized at 115200 baud");
   
   // Initialize servo pins
   pinMode(AZIMUTH_SERVO_PIN, OUTPUT);
