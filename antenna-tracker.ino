@@ -20,10 +20,10 @@ const int GPS_RX_PIN = 11;
 const int GPS_TX_PIN = 12;
 
 // Servo Calibration (adjust based on your servos)
-const int AZIMUTH_MIN_US = 1000;    // Microseconds for min position (270 degrees West)
-const int AZIMUTH_MAX_US = 2000;    // Microseconds for max position (90 degrees East)
-const int ELEVATION_MIN_US = 1000;  // Microseconds for min position (0 degrees Down)
-const int ELEVATION_MAX_US = 2000;  // Microseconds for max position (90 degrees Up)
+const int AZIMUTH_MIN_US = 400;    // Microseconds for min position (270 degrees West)
+const int AZIMUTH_MAX_US = 2400;    // Microseconds for max position (90 degrees East)
+const int ELEVATION_MIN_US = 650;  // Microseconds for min position (0 degrees Down)
+const int ELEVATION_MAX_US = 2400;  // Microseconds for max position (90 degrees Up)
 
 // ==================== GLOBAL VARIABLES ====================
 WiFiUDP udp;
