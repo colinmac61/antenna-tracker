@@ -16,8 +16,8 @@ const int AZIMUTH_SERVO_PIN = 18;   // Servo for horizontal rotation (East/West)
 const int ELEVATION_SERVO_PIN = 19; // Servo for vertical rotation (Up/Down)
 
 // GPIO Pins for GPS (Serial2)
-const int GPS_RX_PIN = 16;
-const int GPS_TX_PIN = 17;
+const int GPS_RX_PIN = 11;
+const int GPS_TX_PIN = 12;
 
 // Servo Calibration (adjust based on your servos)
 const int AZIMUTH_MIN_US = 1000;    // Microseconds for min position (270 degrees West)
