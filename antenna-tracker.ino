@@ -516,15 +516,15 @@ void calibrate_servos() {
   digitalWrite(AZIMUTH_SERVO_PIN, LOW);
   delay(2000);
   
-  Serial.println("[CALIBRATE] Setting elevation to minimum (Down)");
-  digitalWrite(ELEVATION_SERVO_PIN, HIGH);
-  delayMicroseconds(ELEVATION_MIN_US);
-  digitalWrite(ELEVATION_SERVO_PIN, LOW);
-  delay(2000);
-  
   Serial.println("[CALIBRATE] Setting elevation to maximum (Up)");
   digitalWrite(ELEVATION_SERVO_PIN, HIGH);
   delayMicroseconds(ELEVATION_MAX_US);
+  digitalWrite(ELEVATION_SERVO_PIN, LOW);
+  delay(2000);
+
+    Serial.println("[CALIBRATE] Setting elevation to minimum (Down)");
+  digitalWrite(ELEVATION_SERVO_PIN, HIGH);
+  delayMicroseconds(ELEVATION_MIN_US);
   digitalWrite(ELEVATION_SERVO_PIN, LOW);
   delay(2000);
   
