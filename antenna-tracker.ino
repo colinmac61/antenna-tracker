@@ -12,8 +12,8 @@ const char* password = "expresslrs";          // Change to your ELRS backpack pa
 const int udp_port = 14550;                      // MAVLink UDP port
 
 // GPIO Pins for Servos
-const int AZIMUTH_SERVO_PIN = 18;   // Servo for horizontal rotation (East/West)
-const int ELEVATION_SERVO_PIN = 19; // Servo for vertical rotation (Up/Down)
+const int AZIMUTH_SERVO_PIN = 13;   // Servo for horizontal rotation (East/West)
+const int ELEVATION_SERVO_PIN = 14; // Servo for vertical rotation (Up/Down)
 
 // GPIO Pins for GPS (Serial2)
 const int GPS_RX_PIN = 11;
