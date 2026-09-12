@@ -4,6 +4,7 @@
 #include <HardwareSerial.h>
 #include <math.h>
 #include <MAVLink.h>
+#include <ESP32Servo.h>
 
 // ==================== CONFIGURATION ====================
 // WiFi Configuration for ELRS Backpack
@@ -25,10 +26,17 @@ const int AZIMUTH_MAX_US = 2400;    // Microseconds for max position (90 degrees
 const int ELEVATION_MIN_US = 400;  // Microseconds for min position (0 degrees Down)
 const int ELEVATION_MAX_US = 2400;  // Microseconds for max position (90 degrees Up)
 
+// Telemetry timeout (milliseconds)
+const unsigned long MAVLINK_TIMEOUT_MS = 5000;  // Stop tracking if no data for 5 seconds
+
 // ==================== GLOBAL VARIABLES ====================
 WiFiUDP udp;
 TinyGPSPlus gps;
 HardwareSerial SerialGPS(2);
+
+// Servo objects for hardware PWM control
+Servo azimuthServo;
+Servo elevationServo;
 
 // Local tracker position
 struct {
@@ -55,6 +63,10 @@ struct {
   boolean valid;
 } tracking_angles;
 
+// Timing control
+unsigned long lastServoUpdate = 0;
+const unsigned long SERVO_UPDATE_INTERVAL = 100;  // milliseconds (10 Hz)
+
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(115200);
@@ -67,10 +79,10 @@ void setup() {
   SerialGPS.begin(115200, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   Serial.println("[GPS] Serial initialized at 115200 baud");
   
-  // Initialize servo pins
-  pinMode(AZIMUTH_SERVO_PIN, OUTPUT);
-  pinMode(ELEVATION_SERVO_PIN, OUTPUT);
-  Serial.println("[SERVO] Servo pins initialized");
+  // Initialize servo pins with hardware PWM
+  azimuthServo.attach(AZIMUTH_SERVO_PIN, AZIMUTH_MIN_US, AZIMUTH_MAX_US);
+  elevationServo.attach(ELEVATION_SERVO_PIN, ELEVATION_MIN_US, ELEVATION_MAX_US);
+  Serial.println("[SERVO] Servo pins initialized with hardware PWM");
   
   // Initialize WiFi
   WiFi.mode(WIFI_STA);
@@ -118,6 +130,8 @@ void setup() {
   tracking_angles.elevation = 0;
   tracking_angles.valid = false;
   
+  lastServoUpdate = 0;
+  
   Serial.println("[SYSTEM] Initialization complete\n");
   print_command_help();
 }
@@ -135,21 +149,25 @@ void loop() {
   // Receive MAVLink telemetry
   receive_mavlink_data();
   
-  // Calculate tracking angles if we have valid data
-  if (local_position.fix && uav_position.position_valid) {
-    calculate_tracking_angles();
-    update_servo_positions();
-  } else {
-    if (!local_position.fix) {
-      Serial.println("[WARNING] Waiting for GPS fix...");
+  // Update servo positions at regular intervals (non-blocking)
+  if (millis() - lastServoUpdate >= SERVO_UPDATE_INTERVAL) {
+    lastServoUpdate = millis();
+    
+    // Calculate tracking angles if we have valid data
+    if (local_position.fix && is_mavlink_data_fresh()) {
+      calculate_tracking_angles();
+      update_servo_positions();
+    } else {
+      if (!local_position.fix) {
+        Serial.println("[WARNING] Waiting for GPS fix...");
+      }
+      if (!is_mavlink_data_fresh()) {
+        Serial.println("[WARNING] Waiting for fresh UAV telemetry...");
+        // Park servos to safe position when no valid data
+        park_servos();
+      }
     }
-    if (!uav_position.position_valid) {
-      Serial.println("[WARNING] Waiting for UAV telemetry...");
-    }
-    delay(1000);
   }
-  
-  delay(100);  // Main loop delay
 }
 
 // ==================== GPS FUNCTIONS ====================
@@ -264,6 +282,26 @@ void handle_attitude(mavlink_message_t* msg) {
   Serial.println(" °");
 }
 
+// ==================== TELEMETRY VALIDATION ====================
+boolean is_mavlink_data_fresh() {
+  if (!uav_position.position_valid) {
+    return false;
+  }
+  
+  unsigned long age = millis() - uav_position.last_update;
+  if (age > MAVLINK_TIMEOUT_MS) {
+    Serial.print("[MAVLink] ✗ Telemetry timeout - data age: ");
+    Serial.print(age / 1000);
+    Serial.println(" seconds (exceeded ");
+    Serial.print(MAVLINK_TIMEOUT_MS / 1000);
+    Serial.println("s limit)");
+    uav_position.position_valid = false;
+    return false;
+  }
+  
+  return true;
+}
+
 // ==================== ANGLE CALCULATION ====================
 void calculate_tracking_angles() {
   Serial.println("\n[CALC] Calculating tracking angles...");
@@ -341,32 +379,31 @@ void update_servo_positions() {
     return;
   }
   
-  // Convert azimuth (0-360) to servo microseconds
-  // Map: 0° = left (AZIMUTH_MIN), 90° = center, 180° = right (AZIMUTH_MAX)
-  int azimuth_us = map_angle_to_servo(tracking_angles.azimuth, 0, 180, AZIMUTH_MIN_US, AZIMUTH_MAX_US);
+  // Convert azimuth (0-360) to servo angle (0-180)
+  // Map: 0° = left, 90° = center, 180° = right
+  int azimuth_angle = map(tracking_angles.azimuth, 0, 180, 0, 180);
   
-  // Convert elevation (0-90) to servo microseconds
-  int elevation_us = map_angle_to_servo(tracking_angles.elevation, 0, 90, ELEVATION_MIN_US, ELEVATION_MAX_US);
+  // Convert elevation (0-90) to servo angle (0-90)
+  int elevation_angle = constrain(tracking_angles.elevation, 0, 90);
   
-  // Send PWM signals
-  digitalWrite(AZIMUTH_SERVO_PIN, HIGH);
-  delayMicroseconds(azimuth_us);
-  digitalWrite(AZIMUTH_SERVO_PIN, LOW);
-  
-  digitalWrite(ELEVATION_SERVO_PIN, HIGH);
-  delayMicroseconds(elevation_us);
-  digitalWrite(ELEVATION_SERVO_PIN, LOW);
+  // Write angles to servos using hardware PWM
+  azimuthServo.write(azimuth_angle);
+  elevationServo.write(elevation_angle);
   
   Serial.print("[SERVO] Azimuth: ");
-  Serial.print(azimuth_us);
-  Serial.print(" µs, Elevation: ");
-  Serial.print(elevation_us);
-  Serial.println(" µs");
+  Serial.print(azimuth_angle);
+  Serial.print("° (raw: ");
+  Serial.print(tracking_angles.azimuth);
+  Serial.print("°), Elevation: ");
+  Serial.print(elevation_angle);
+  Serial.println("°");
 }
 
-int map_angle_to_servo(double angle, double min_angle, double max_angle, int min_us, int max_us) {
-  angle = constrain(angle, min_angle, max_angle);
-  return map(angle * 100, min_angle * 100, max_angle * 100, min_us, max_us);
+void park_servos() {
+  // Move servos to neutral/safe position when no valid tracking data
+  azimuthServo.write(90);   // Center azimuth
+  elevationServo.write(0);  // Lower elevation
+  Serial.println("[SERVO] Servos parked to safe position");
 }
 
 // ==================== SERIAL COMMANDS ====================
@@ -404,22 +441,34 @@ void handle_serial_command() {
     calibrate_servos();
   }
   else if (command.startsWith("SET LAT")) {
-    double lat = command.substring(8).toDouble();
-    local_position.latitude = lat;
-    Serial.print("[CMD] Latitude set to: ");
-    Serial.println(lat, 6);
+    if (command.length() > 8) {
+      double lat = command.substring(8).toDouble();
+      local_position.latitude = lat;
+      Serial.print("[CMD] Latitude set to: ");
+      Serial.println(lat, 6);
+    } else {
+      Serial.println("[CMD] Usage: SET LAT <value>");
+    }
   }
   else if (command.startsWith("SET LON")) {
-    double lon = command.substring(8).toDouble();
-    local_position.longitude = lon;
-    Serial.print("[CMD] Longitude set to: ");
-    Serial.println(lon, 6);
+    if (command.length() > 8) {
+      double lon = command.substring(8).toDouble();
+      local_position.longitude = lon;
+      Serial.print("[CMD] Longitude set to: ");
+      Serial.println(lon, 6);
+    } else {
+      Serial.println("[CMD] Usage: SET LON <value>");
+    }
   }
   else if (command.startsWith("SET ALT")) {
-    double alt = command.substring(8).toDouble();
-    local_position.altitude = alt;
-    Serial.print("[CMD] Altitude set to: ");
-    Serial.println(alt, 2);
+    if (command.length() > 8) {
+      double alt = command.substring(8).toDouble();
+      local_position.altitude = alt;
+      Serial.print("[CMD] Altitude set to: ");
+      Serial.println(alt, 2);
+    } else {
+      Serial.println("[CMD] Usage: SET ALT <value>");
+    }
   }
   else {
     Serial.println("[CMD] Unknown command. Type 'HELP' for available commands.");
@@ -466,11 +515,15 @@ void print_system_status() {
   Serial.print(uav_position.altitude);
   Serial.println(" m");
   Serial.print("Valid:     ");
-  Serial.println(uav_position.position_valid ? "✓ Yes" : "✗ No");
-  unsigned long age = millis() - uav_position.last_update;
-  Serial.print("Data Age:  ");
-  Serial.print(age / 1000);
-  Serial.println(" seconds");
+  Serial.println(is_mavlink_data_fresh() ? "✓ Yes (fresh)" : "✗ No (stale or missing)");
+  if (uav_position.position_valid) {
+    unsigned long age = millis() - uav_position.last_update;
+    Serial.print("Data Age:  ");
+    Serial.print(age / 1000);
+    Serial.print(" seconds (timeout: ");
+    Serial.print(MAVLINK_TIMEOUT_MS / 1000);
+    Serial.println("s)");
+  }
   
   Serial.println("\n--- TRACKING ANGLES ---");
   Serial.print("Azimuth:   ");
@@ -498,34 +551,24 @@ void print_system_status() {
 
 void calibrate_servos() {
   Serial.println("\n[CALIBRATE] Starting servo calibration...");
-  Serial.println("[CALIBRATE] Setting azimuth to minimum (West)");
-  digitalWrite(AZIMUTH_SERVO_PIN, HIGH);
-  delayMicroseconds(AZIMUTH_MIN_US);
-  digitalWrite(AZIMUTH_SERVO_PIN, LOW);
+  Serial.println("[CALIBRATE] Setting azimuth to minimum (0°)");
+  azimuthServo.write(0);
   delay(2000);
   
-  Serial.println("[CALIBRATE] Setting azimuth to maximum (East)");
-  digitalWrite(AZIMUTH_SERVO_PIN, HIGH);
-  delayMicroseconds(AZIMUTH_MAX_US);
-  digitalWrite(AZIMUTH_SERVO_PIN, LOW);
+  Serial.println("[CALIBRATE] Setting azimuth to maximum (180°)");
+  azimuthServo.write(180);
   delay(2000);
   
-  Serial.println("[CALIBRATE] Setting azimuth to center (North)");
-  digitalWrite(AZIMUTH_SERVO_PIN, HIGH);
-  delayMicroseconds((AZIMUTH_MIN_US + AZIMUTH_MAX_US) / 2);
-  digitalWrite(AZIMUTH_SERVO_PIN, LOW);
+  Serial.println("[CALIBRATE] Setting azimuth to center (90°)");
+  azimuthServo.write(90);
   delay(2000);
   
-  Serial.println("[CALIBRATE] Setting elevation to maximum (Up)");
-  digitalWrite(ELEVATION_SERVO_PIN, HIGH);
-  delayMicroseconds(ELEVATION_MAX_US);
-  digitalWrite(ELEVATION_SERVO_PIN, LOW);
+  Serial.println("[CALIBRATE] Setting elevation to maximum (90°)");
+  elevationServo.write(90);
   delay(2000);
-
-    Serial.println("[CALIBRATE] Setting elevation to minimum (Down)");
-  digitalWrite(ELEVATION_SERVO_PIN, HIGH);
-  delayMicroseconds(ELEVATION_MIN_US);
-  digitalWrite(ELEVATION_SERVO_PIN, LOW);
+  
+  Serial.println("[CALIBRATE] Setting elevation to minimum (0°)");
+  elevationServo.write(0);
   delay(2000);
   
   Serial.println("[CALIBRATE] ✓ Calibration complete\n");
