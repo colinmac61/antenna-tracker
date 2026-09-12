@@ -45,6 +45,7 @@ struct {
   double altitude;
   char direction;  // 'N', 'S', 'E', 'W'
   boolean fix;
+  boolean fix_announced;  // Track if we've announced the fix once
 } local_position;
 
 // Remote UAV position from MAVLink
@@ -66,6 +67,14 @@ struct {
 // Timing control
 unsigned long lastServoUpdate = 0;
 const unsigned long SERVO_UPDATE_INTERVAL = 100;  // milliseconds (10 Hz)
+
+// MAVLink statistics for debugging
+struct {
+  unsigned long total_packets_received;
+  unsigned long successful_decodes;
+  unsigned long failed_decodes;
+  unsigned int last_message_id;
+} mavlink_stats;
 
 // ==================== SETUP ====================
 void setup() {
@@ -119,6 +128,7 @@ void setup() {
   local_position.altitude = 0;
   local_position.direction = 'N';
   local_position.fix = false;
+  local_position.fix_announced = false;
   
   uav_position.latitude = 0;
   uav_position.longitude = 0;
@@ -131,6 +141,12 @@ void setup() {
   tracking_angles.valid = false;
   
   lastServoUpdate = 0;
+  
+  // Initialize MAVLink statistics
+  mavlink_stats.total_packets_received = 0;
+  mavlink_stats.successful_decodes = 0;
+  mavlink_stats.failed_decodes = 0;
+  mavlink_stats.last_message_id = 0;
   
   Serial.println("[SYSTEM] Initialization complete\n");
   print_command_help();
@@ -178,26 +194,35 @@ void update_local_gps() {
     gps.encode(c);
   }
   
-  // Check if we have a new valid position
-  if (gps.location.isUpdated()) {
+  // Check if we have a new valid position with 3D fix
+  if (gps.location.isUpdated() && gps.location.isValid()) {
     local_position.latitude = gps.location.lat();
     local_position.longitude = gps.location.lng();
     local_position.altitude = gps.altitude.meters();
-    local_position.fix = gps.location.isValid();
+    local_position.fix = true;
     
-    Serial.println("\n[GPS] ✓ Position Updated:");
-    Serial.print("  Lat: ");
-    Serial.println(local_position.latitude, 6);
-    Serial.print("  Lon: ");
-    Serial.println(local_position.longitude, 6);
-    Serial.print("  Alt: ");
-    Serial.print(local_position.altitude);
-    Serial.println(" m");
-    Serial.print("  Direction: ");
-    Serial.println(local_position.direction);
+    // Only print once when 3D fix is achieved
+    if (!local_position.fix_announced) {
+      local_position.fix_announced = true;
+      Serial.println("\n[GPS] ✓ 3D Fix Achieved - Position Valid:");
+      Serial.print("  Lat: ");
+      Serial.println(local_position.latitude, 6);
+      Serial.print("  Lon: ");
+      Serial.println(local_position.longitude, 6);
+      Serial.print("  Alt: ");
+      Serial.print(local_position.altitude);
+      Serial.println(" m");
+      Serial.print("  Direction: ");
+      Serial.println(local_position.direction);
+    }
+  } else if (!gps.location.isValid() && local_position.fix_announced) {
+    // Lost GPS fix
+    local_position.fix = false;
+    local_position.fix_announced = false;
+    Serial.println("[GPS] ✗ Lost GPS fix");
   }
   
-  // Check GPS signal strength
+  // Check GPS signal strength (print every update)
   if (gps.satellites.isUpdated()) {
     Serial.print("[GPS] Satellites: ");
     Serial.println(gps.satellites.value());
@@ -214,13 +239,32 @@ void receive_mavlink_data() {
     mavlink_message_t msg;
     mavlink_status_t status;
     
-    Serial.print("[MAVLink] Received packet, length: ");
-    Serial.println(len);
+    mavlink_stats.total_packets_received++;
     
+    Serial.print("[MAVLink] ✓ UDP packet received (");
+    Serial.print(len);
+    Serial.print(" bytes) - Decoding... ");
+    
+    int decode_count = 0;
     for (int i = 0; i < len; i++) {
       if (mavlink_parse_char(MAVLINK_COMM_0, buf[i], &msg, &status)) {
+        decode_count++;
+        mavlink_stats.successful_decodes++;
+        mavlink_stats.last_message_id = msg.msgid;
+        Serial.print("[MSG_ID: ");
+        Serial.print(msg.msgid);
+        Serial.print("] ");
         process_mavlink_message(&msg);
       }
+    }
+    
+    if (decode_count == 0) {
+      mavlink_stats.failed_decodes++;
+      Serial.println("[NO VALID MESSAGE DECODED]");
+    } else {
+      Serial.print("(");
+      Serial.print(decode_count);
+      Serial.println(" message(s) decoded)");
     }
   }
 }
@@ -228,10 +272,12 @@ void receive_mavlink_data() {
 void process_mavlink_message(mavlink_message_t* msg) {
   switch (msg->msgid) {
     case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
+      Serial.println("[MAVLink] Processing GLOBAL_POSITION_INT...");
       handle_global_position_int(msg);
       break;
       
     case MAVLINK_MSG_ID_ATTITUDE:
+      Serial.println("[MAVLink] Processing ATTITUDE...");
       handle_attitude(msg);
       break;
       
@@ -240,8 +286,9 @@ void process_mavlink_message(mavlink_message_t* msg) {
       break;
       
     default:
-      Serial.print("[MAVLink] Message ID received: ");
-      Serial.println(msg->msgid);
+      Serial.print("[MAVLink] Received message ID: ");
+      Serial.print(msg->msgid);
+      Serial.println(" (no handler)");
       break;
   }
 }
@@ -440,6 +487,9 @@ void handle_serial_command() {
   else if (command == "CALIBRATE") {
     calibrate_servos();
   }
+  else if (command == "MAVLINK_STATS") {
+    print_mavlink_stats();
+  }
   else if (command.startsWith("SET LAT")) {
     if (command.length() > 8) {
       double lat = command.substring(8).toDouble();
@@ -484,6 +534,7 @@ void print_command_help() {
   Serial.println("STATUS             - Print current system status");
   Serial.println("HELP               - Print this help message");
   Serial.println("CALIBRATE          - Run servo calibration");
+  Serial.println("MAVLINK_STATS      - Print MAVLink debug statistics");
   Serial.println("SET LAT <value>    - Manually set local latitude");
   Serial.println("SET LON <value>    - Manually set local longitude");
   Serial.println("SET ALT <value>    - Manually set local altitude (meters)");
@@ -547,6 +598,19 @@ void print_system_status() {
   }
   
   Serial.println("\n===================================\n");
+}
+
+void print_mavlink_stats() {
+  Serial.println("\n========== MAVLINK STATISTICS ==========");
+  Serial.print("Total UDP Packets:     ");
+  Serial.println(mavlink_stats.total_packets_received);
+  Serial.print("Successful Decodes:    ");
+  Serial.println(mavlink_stats.successful_decodes);
+  Serial.print("Failed Decodes:        ");
+  Serial.println(mavlink_stats.failed_decodes);
+  Serial.print("Last Message ID:       ");
+  Serial.println(mavlink_stats.last_message_id);
+  Serial.println("=========================================\n");
 }
 
 void calibrate_servos() {
