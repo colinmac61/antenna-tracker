@@ -276,6 +276,11 @@ void process_mavlink_message(mavlink_message_t* msg) {
       handle_global_position_int(msg);
       break;
       
+    case MAVLINK_MSG_ID_GPS_RAW_INT:
+      Serial.println("[MAVLink] Processing GPS_RAW_INT...");
+      handle_gps_raw_int(msg);
+      break;
+      
     case MAVLINK_MSG_ID_ATTITUDE:
       Serial.println("[MAVLink] Processing ATTITUDE...");
       handle_attitude(msg);
@@ -303,7 +308,7 @@ void handle_global_position_int(mavlink_message_t* msg) {
   uav_position.position_valid = true;
   uav_position.last_update = millis();
   
-  Serial.println("[MAVLink] ✓ UAV Position Updated:");
+  Serial.println("[MAVLink] ✓ UAV Position Updated (GLOBAL_POSITION_INT):");
   Serial.print("  Lat: ");
   Serial.println(uav_position.latitude, 6);
   Serial.print("  Lon: ");
@@ -311,6 +316,28 @@ void handle_global_position_int(mavlink_message_t* msg) {
   Serial.print("  Alt: ");
   Serial.print(uav_position.altitude);
   Serial.println(" m");
+}
+
+void handle_gps_raw_int(mavlink_message_t* msg) {
+  mavlink_gps_raw_int_t gps_raw;
+  mavlink_msg_gps_raw_int_decode(msg, &gps_raw);
+  
+  // Extract GPS data (coordinates are in degrees * 1e7, altitude in mm)
+  uav_position.latitude = gps_raw.lat / 1e7;
+  uav_position.longitude = gps_raw.lon / 1e7;
+  uav_position.altitude = gps_raw.alt / 1000.0;  // Convert mm to meters
+  uav_position.position_valid = true;
+  uav_position.last_update = millis();
+  
+  Serial.println("[MAVLink] ✓ UAV Position Updated (GPS_RAW_INT):");
+  Serial.print("  Lat: ");
+  Serial.println(uav_position.latitude, 6);
+  Serial.print("  Lon: ");
+  Serial.println(uav_position.longitude, 6);
+  Serial.print("  Alt: ");
+  Serial.print(uav_position.altitude);
+  Serial.print(" m, Sats: ");
+  Serial.println(gps_raw.satellites_visible);
 }
 
 void handle_attitude(mavlink_message_t* msg) {
