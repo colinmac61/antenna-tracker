@@ -12,6 +12,12 @@ const char* ssid = "ExpressLRS TX Backpack ABFA86";        // Change to your ELR
 const char* password = "expresslrs";          // Change to your ELRS backpack password
 const int udp_port = 14550;                      // MAVLink UDP port
 
+// Define your Static IP configuration
+IPAddress local_IP(10, 0, 0, 5); 
+IPAddress gateway(10, 0, 0, 1);
+IPAddress subnet(255, 255, 255, 0);
+IPAddress primaryDNS(8, 8, 8, 8);   
+
 // GPIO Pins for Servos
 const int AZIMUTH_SERVO_PIN = 13;   // Servo for horizontal rotation (East/West)
 const int ELEVATION_SERVO_PIN = 14; // Servo for vertical rotation (Up/Down)
@@ -96,6 +102,9 @@ void setup() {
   Serial.println("[SERVO] Servo pins initialized with hardware PWM");
   
   // Initialize WiFi
+  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
+    Serial.println("STA Failed to configure Static IP");
+  }
   WiFi.mode(WIFI_STA);
   Serial.print("[WiFi] Connecting to SSID: ");
   Serial.println(ssid);
