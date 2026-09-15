@@ -16,6 +16,8 @@ const int udp_port = 14550;                      // MAVLink UDP port
 const int AZIMUTH_SERVO_PIN = 13;   // Servo for horizontal rotation (East/West)
 const int ELEVATION_SERVO_PIN = 14; // Servo for vertical rotation (Up/Down)
 
+const float gearRatio = 2.0; 
+
 // GPIO Pins for GPS (Serial2)
 const int GPS_RX_PIN = 11;
 const int GPS_TX_PIN = 12;
@@ -458,7 +460,7 @@ void update_servo_positions() {
   int azimuth_angle = map(tracking_angles.azimuth, 0, 180, 0, 180);
   
   // Convert elevation (0-90) to servo angle (0-90)
-  int elevation_angle = constrain(tracking_angles.elevation, 0, 90);
+  int elevation_angle = constrain(tracking_angles.elevation * gearRatio , 0, 180); //2:1 gear ration added
   
   // Write angles to servos using hardware PWM
   azimuthServo.write(azimuth_angle);
@@ -655,7 +657,7 @@ void calibrate_servos() {
   delay(2000);
   
   Serial.println("[CALIBRATE] Setting elevation to maximum (90°)");
-  elevationServo.write(90);
+  elevationServo.write(gearRatio * 90); //adding 2:1 gear ratio int
   delay(2000);
   
   Serial.println("[CALIBRATE] Setting elevation to minimum (0°)");
