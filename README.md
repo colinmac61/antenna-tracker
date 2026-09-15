@@ -89,9 +89,16 @@ WiFi                  ELRS Backpack
 Edit the main sketch:
 
 ```cpp
-// WiFi
+// WiFi - connect to Backpack or CGS MAVLINK forwarding
 const char* ssid = "YOUR_ELRS_SSID";
 const char* password = "YOUR_PASSWORD";
+const int udp_port = 14550;
+
+// Define your Static IP configuration
+IPAddress local_IP(10, 0, 0, 5); 
+IPAddress gateway(10, 0, 0, 1);
+IPAddress subnet(255, 255, 255, 0);
+IPAddress primaryDNS(8, 8, 8, 8);   
 
 // GPIO Pins
 const int AZIMUTH_SERVO_PIN = 18;
@@ -249,6 +256,7 @@ delay(500);  // Slower updates = smoother motion
 - [ ] Multiple target tracking
 - [ ] Motor encoders for feedback
 - [ ] Battery monitoring
+- [ ] OLED Display Dashboard
 
 ## License
 
