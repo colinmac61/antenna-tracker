@@ -411,13 +411,21 @@ void update_servo_positions() {
     return;
   }
   
-  // Convert azimuth (0-360) to servo angle (0-180)
-  // Map: 0° = left, 90° = center, 180° = right
-  int azimuth_angle = map(tracking_angles.azimuth, 0, 180, 0, 180);
-  
-  // Convert elevation (0-90) to servo angle (0-90)
-  int elevation_angle = constrain(tracking_angles.elevation * gearRatio, 0, 180);
-  
+  // Convert the compass bearing to a servo-friendly angle, with North at center.
+  // Bearing is 0..360° where 0° = North, 90° = East, 180° = South, 270° = West.
+  // Servo is designed with:
+  //   0° = West, 90° = North, 180° = East
+  double relative_azimuth = tracking_angles.azimuth;
+  if (relative_azimuth > 180.0) {
+    relative_azimuth -= 360.0;  // Convert to -180..180 relative to North
+  }
+
+  // Map relative bearing to servo angle: West=-90° -> 0°, North=0° -> 90°, East=+90° -> 180°
+  int azimuth_angle = constrain((int)round(relative_azimuth + 90.0), 0, 180);
+
+  // Elevation follows 0..90° directly, but is scaled by gear ratio if needed.
+  int elevation_angle = constrain((int)round(tracking_angles.elevation * gearRatio), 0, 180);
+
   // Write angles to servos using hardware PWM
   azimuthServo.write(azimuth_angle);
   elevationServo.write(elevation_angle);
