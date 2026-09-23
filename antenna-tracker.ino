@@ -102,9 +102,9 @@ void setup() {
   Serial.println("[SERVO] Servo pins initialized with hardware PWM");
   
   // Initialize WiFi
- // if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
- //  Serial.println("STA Failed to configure Static IP");
- // }
+  // if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
+  //  Serial.println("STA Failed to configure Static IP");
+  // }
   WiFi.mode(WIFI_STA);
   Serial.print("[WiFi] Connecting to SSID: ");
   Serial.println(ssid);
@@ -252,30 +252,25 @@ void receive_mavlink_data() {
     
     mavlink_stats.total_packets_received++;
     
-    Serial.print("[MAVLink] ✓ UDP packet received (");
-    Serial.print(len);
-    Serial.print(" bytes) - Decoding... ");
-    
     int decode_count = 0;
     for (int i = 0; i < len; i++) {
       if (mavlink_parse_char(MAVLINK_COMM_0, buf[i], &msg, &status)) {
         decode_count++;
         mavlink_stats.successful_decodes++;
         mavlink_stats.last_message_id = msg.msgid;
-        Serial.print("[MSG_ID: ");
-        Serial.print(msg.msgid);
-        Serial.print("] ");
-        process_mavlink_message(&msg);
+
+        // Only display and process position messages.
+        if (msg.msgid == MAVLINK_MSG_ID_GPS_RAW_INT ||
+            msg.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT) {
+          Serial.print("[MAVLink] MSG_ID: ");
+          Serial.println(msg.msgid);
+          process_mavlink_message(&msg);
+        }
       }
     }
     
     if (decode_count == 0) {
       mavlink_stats.failed_decodes++;
-      Serial.println("[NO VALID MESSAGE DECODED]");
-    } else {
-      Serial.print("(");
-      Serial.print(decode_count);
-      Serial.println(" message(s) decoded)");
     }
   }
 }
@@ -283,28 +278,15 @@ void receive_mavlink_data() {
 void process_mavlink_message(mavlink_message_t* msg) {
   switch (msg->msgid) {
     case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
-      Serial.println("[MAVLink] Processing GLOBAL_POSITION_INT...");
       handle_global_position_int(msg);
       break;
-      
+
     case MAVLINK_MSG_ID_GPS_RAW_INT:
-      Serial.println("[MAVLink] Processing GPS_RAW_INT...");
       handle_gps_raw_int(msg);
       break;
-      
-    case MAVLINK_MSG_ID_ATTITUDE:
-      Serial.println("[MAVLink] Processing ATTITUDE...");
-      handle_attitude(msg);
-      break;
-      
-    case MAVLINK_MSG_ID_HEARTBEAT:
-      Serial.println("[MAVLink] ✓ Heartbeat received");
-      break;
-      
+
     default:
-      Serial.print("[MAVLink] Received message ID: ");
-      Serial.print(msg->msgid);
-      Serial.println(" (no handler)");
+      // Ignore all other MAVLink message types.
       break;
   }
 }
@@ -318,15 +300,6 @@ void handle_global_position_int(mavlink_message_t* msg) {
   uav_position.altitude = pos.alt / 1000.0;  // Convert from mm to meters
   uav_position.position_valid = true;
   uav_position.last_update = millis();
-  
-  Serial.println("[MAVLink] ✓ UAV Position Updated (GLOBAL_POSITION_INT):");
-  Serial.print("  Lat: ");
-  Serial.println(uav_position.latitude, 6);
-  Serial.print("  Lon: ");
-  Serial.println(uav_position.longitude, 6);
-  Serial.print("  Alt: ");
-  Serial.print(uav_position.altitude);
-  Serial.println(" m");
 }
 
 void handle_gps_raw_int(mavlink_message_t* msg) {
@@ -339,32 +312,6 @@ void handle_gps_raw_int(mavlink_message_t* msg) {
   uav_position.altitude = gps_raw.alt / 1000.0;  // Convert mm to meters
   uav_position.position_valid = true;
   uav_position.last_update = millis();
-  
-  Serial.println("[MAVLink] ✓ UAV Position Updated (GPS_RAW_INT):");
-  Serial.print("  Lat: ");
-  Serial.println(uav_position.latitude, 6);
-  Serial.print("  Lon: ");
-  Serial.println(uav_position.longitude, 6);
-  Serial.print("  Alt: ");
-  Serial.print(uav_position.altitude);
-  Serial.print(" m, Sats: ");
-  Serial.println(gps_raw.satellites_visible);
-}
-
-void handle_attitude(mavlink_message_t* msg) {
-  mavlink_attitude_t attitude;
-  mavlink_msg_attitude_decode(msg, &attitude);
-  
-  Serial.println("[MAVLink] UAV Attitude:");
-  Serial.print("  Roll: ");
-  Serial.print(attitude.roll * 57.2958); // Convert rad to degrees
-  Serial.println(" °");
-  Serial.print("  Pitch: ");
-  Serial.print(attitude.pitch * 57.2958);
-  Serial.println(" °");
-  Serial.print("  Yaw: ");
-  Serial.print(attitude.yaw * 57.2958);
-  Serial.println(" °");
 }
 
 // ==================== TELEMETRY VALIDATION ====================
@@ -469,7 +416,7 @@ void update_servo_positions() {
   int azimuth_angle = map(tracking_angles.azimuth, 0, 180, 0, 180);
   
   // Convert elevation (0-90) to servo angle (0-90)
-  int elevation_angle = constrain(tracking_angles.elevation * gearRatio , 0, 180); //2:1 gear ration added
+  int elevation_angle = constrain(tracking_angles.elevation * gearRatio, 0, 180);
   
   // Write angles to servos using hardware PWM
   azimuthServo.write(azimuth_angle);
@@ -666,7 +613,7 @@ void calibrate_servos() {
   delay(2000);
   
   Serial.println("[CALIBRATE] Setting elevation to maximum (90°)");
-  elevationServo.write(gearRatio * 90); //adding 2:1 gear ratio int
+  elevationServo.write(gearRatio * 90);
   delay(2000);
   
   Serial.println("[CALIBRATE] Setting elevation to minimum (0°)");
