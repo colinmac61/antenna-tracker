@@ -1,3 +1,5 @@
+#define Serial Serial1 
+
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <TinyGPS++.h>
@@ -27,6 +29,9 @@ const float gearRatio = 2.0;
 // GPIO Pins for GPS (Serial2)
 const int GPS_RX_PIN = 11;
 const int GPS_TX_PIN = 12;
+
+#define BT_RX 5  // Physical Pin D2 (HC-05 TXD)
+#define BT_TX 6  // Physical Pin D3 (HC-05 RXD)
 
 // Servo Calibration (adjust based on your servos)
 const int AZIMUTH_MIN_US = 400;    // Microseconds for min position (270 degrees West)
@@ -89,6 +94,8 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
+  Serial1.begin(57600, SERIAL_8N1, BT_RX, BT_TX);
+
   Serial.println("\n\n=== ANTENNA TRACKER STARTUP ===");
   Serial.println("Initializing systems...");
   
