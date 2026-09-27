@@ -432,7 +432,7 @@ void update_servo_positions() {
   // Map relative bearing to servo angle: West=-90° -> 0°, North=0° -> 90°, East=+90° -> 180°
   //int azimuth_angle = constrain((int)round(relative_azimuth + 90.0), 0, 180);
   int calculated_angle = constrain((int)round(relative_azimuth + 90.0), 0, 180);
-  int azimuth_angle = 180 - calculated_angle; 
+  int azimuth_angle = 180 - calculated_angle; // This corrects the azimuth as the servo is mounted inverted
 
   // Elevation follows 0..90° directly, but is scaled by gear ratio if needed.
   int elevation_angle = constrain((int)round(tracking_angles.elevation * gearRatio), 0, 180);
