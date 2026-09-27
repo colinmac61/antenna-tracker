@@ -34,10 +34,10 @@ const int GPS_TX_PIN = 12;
 #define BT_TX 6  // Physical Pin D3 (HC-05 RXD)
 
 // Servo Calibration (adjust based on your servos)
-const int AZIMUTH_MIN_US = 400;    // Microseconds for min position (270 degrees West)
-const int AZIMUTH_MAX_US = 2400;    // Microseconds for max position (90 degrees East)
-const int ELEVATION_MIN_US = 400;  // Microseconds for min position (0 degrees Down)
-const int ELEVATION_MAX_US = 2400;  // Microseconds for max position (90 degrees Up)
+//const int AZIMUTH_MIN_US = 400;    // Microseconds for min position (270 degrees West)
+//const int AZIMUTH_MAX_US = 2400;    // Microseconds for max position (90 degrees East)
+//const int ELEVATION_MIN_US = 400;  // Microseconds for min position (0 degrees Down)
+//const int ELEVATION_MAX_US = 2400;  // Microseconds for max position (90 degrees Up)
 
 // Telemetry timeout (milliseconds)
 const unsigned long MAVLINK_TIMEOUT_MS = 5000;  // Stop tracking if no data for 5 seconds
@@ -104,8 +104,10 @@ void setup() {
   Serial.println("[GPS] Serial initialized at 115200 baud");
   
   // Initialize servo pins with hardware PWM
-  azimuthServo.attach(AZIMUTH_SERVO_PIN, AZIMUTH_MIN_US, AZIMUTH_MAX_US);
-  elevationServo.attach(ELEVATION_SERVO_PIN, ELEVATION_MIN_US, ELEVATION_MAX_US);
+  //azimuthServo.attach(AZIMUTH_SERVO_PIN, AZIMUTH_MIN_US, AZIMUTH_MAX_US);
+  azimuthServo.attach(AZIMUTH_SERVO_PIN);
+  //elevationServo.attach(ELEVATION_SERVO_PIN, ELEVATION_MIN_US, ELEVATION_MAX_US);
+  elevationServo.attach(ELEVATION_SERVO_PIN);
   Serial.println("[SERVO] Servo pins initialized with hardware PWM");
   
   // Initialize WiFi
@@ -428,7 +430,9 @@ void update_servo_positions() {
   }
 
   // Map relative bearing to servo angle: West=-90° -> 0°, North=0° -> 90°, East=+90° -> 180°
-  int azimuth_angle = constrain((int)round(relative_azimuth + 90.0), 0, 180);
+  //int azimuth_angle = constrain((int)round(relative_azimuth + 90.0), 0, 180);
+  int calculated_angle = constrain((int)round(relative_azimuth + 90.0), 0, 180);
+  int azimuth_angle = 180 - calculated_angle; 
 
   // Elevation follows 0..90° directly, but is scaled by gear ratio if needed.
   int elevation_angle = constrain((int)round(tracking_angles.elevation * gearRatio), 0, 180);
