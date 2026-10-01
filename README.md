@@ -60,6 +60,8 @@ ESP32                 Elevation Servo
 WiFi                  ELRS Backpack
 └─ 2.4 GHz ──────────→ MAVLink Telemetry (UDP port 14550)
 ```
+Bluetooth
+└─ ESP32S3 ─────→ HC-05 ─────→ Android Phone ─────→ Serial Bluetooth Terminal
 
 ## Software Installation
 
