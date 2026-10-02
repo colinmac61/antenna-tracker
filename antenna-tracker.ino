@@ -106,7 +106,7 @@ struct {
 
 // ==================== SETUP ====================
 void setup() {
-  Serial.begin(57600, SERIAL_8N1, BT_RX, BT_TX);
+  Serial.begin(57600, SERIAL_8N1, BT_RX, BT_TX); //establish connection to HC-05
   delay(1000);
   
   Serial.println("\n\n=== ANTENNA TRACKER STARTUP ===");
