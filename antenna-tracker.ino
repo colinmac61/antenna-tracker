@@ -33,6 +33,10 @@ const int GPS_TX_PIN = 12;
 #define BT_RX 5  // Physical Pin D2 (HC-05 TXD)
 #define BT_TX 6  // Physical Pin D3 (HC-05 RXD)
 
+// GPS Lock Configuration
+const int GPS_SATELLITE_MIN = 8;       // Minimum satellites for fix
+const float GPS_HDOP_MAX = 1.4;        // Maximum acceptable HDOP (good fix)
+
 // Servo Calibration (adjust based on your servos)
 //const int AZIMUTH_MIN_US = 400;    // Microseconds for min position (270 degrees West)
 //const int AZIMUTH_MAX_US = 2400;    // Microseconds for max position (90 degrees East)
@@ -51,14 +55,22 @@ HardwareSerial SerialGPS(2);
 Servo azimuthServo;
 Servo elevationServo;
 
+// GPS Lock State
+struct {
+  boolean locked;              // True = position is locked, no further updates
+  boolean searching;            // True = actively searching for fix
+  boolean fix_achieved;         // True = fix was obtained at least once
+} gps_state;
+
 // Local tracker position
 struct {
   double latitude;
   double longitude;
   double altitude;
-  char direction;  // 'N', 'S', 'E', 'W'
+  float hdop;                   // Horizontal Dilution of Precision
+  char direction;               // 'N', 'S', 'E', 'W'
   boolean fix;
-  boolean fix_announced;  // Track if we've announced the fix once
+  boolean fix_announced;        // Track if we've announced the fix once
 } local_position;
 
 // Remote UAV position from MAVLink
@@ -142,10 +154,16 @@ void setup() {
     Serial.println("[UDP] ✗ Failed to initialize UDP");
   }
   
+  // Initialize GPS lock state
+  gps_state.locked = false;
+  gps_state.searching = true;
+  gps_state.fix_achieved = false;
+  
   // Initialize position data
   local_position.latitude = 0;
   local_position.longitude = 0;
   local_position.altitude = 0;
+  local_position.hdop = 999.0;
   local_position.direction = 'N';
   local_position.fix = false;
   local_position.fix_announced = false;
@@ -168,7 +186,8 @@ void setup() {
   mavlink_stats.failed_decodes = 0;
   mavlink_stats.last_message_id = 0;
   
-  Serial.println("[SYSTEM] Initialization complete\n");
+  Serial.println("[SYSTEM] Initialization complete");
+  Serial.println("[GPS] Searching for 3D fix with 8+ satellites and HDOP ≤ 1.4...\n");
   print_command_help();
 }
 
@@ -214,38 +233,77 @@ void update_local_gps() {
     gps.encode(c);
   }
   
-  // Check if we have a new valid position with 3D fix
-  if (gps.location.isUpdated() && gps.location.isValid()) {
-    local_position.latitude = gps.location.lat();
-    local_position.longitude = gps.location.lng();
-    local_position.altitude = gps.altitude.meters();
-    local_position.fix = true;
-    
-    // Only print once when 3D fix is achieved
-    if (!local_position.fix_announced) {
-      local_position.fix_announced = true;
-      Serial.println("\n[GPS] ✓ 3D Fix Achieved - Position Valid:");
-      Serial.print("  Lat: ");
-      Serial.println(local_position.latitude, 6);
-      Serial.print("  Lon: ");
-      Serial.println(local_position.longitude, 6);
-      Serial.print("  Alt: ");
-      Serial.print(local_position.altitude);
-      Serial.println(" m");
-      Serial.print("  Direction: ");
-      Serial.println(local_position.direction);
-    }
-  } else if (!gps.location.isValid() && local_position.fix_announced) {
-    // Lost GPS fix
-    local_position.fix = false;
-    local_position.fix_announced = false;
-    Serial.println("[GPS] ✗ Lost GPS fix");
+  // If GPS is already locked, don't process updates
+  if (gps_state.locked) {
+    return;
   }
   
-  // Check GPS signal strength (print every update)
+  // Check for satellite and fix updates
   if (gps.satellites.isUpdated()) {
+    int sats = gps.satellites.value();
     Serial.print("[GPS] Satellites: ");
-    Serial.println(gps.satellites.value());
+    Serial.println(sats);
+    
+    // Display satellite status
+    if (sats < GPS_SATELLITE_MIN) {
+      Serial.print("[GPS] ✗ Insufficient satellites (need ");
+      Serial.print(GPS_SATELLITE_MIN);
+      Serial.println(")");
+    }
+  }
+  
+  // Check if we have a new valid position with 3D fix
+  if (gps.location.isUpdated() && gps.location.isValid() && gps.altitude.isValid()) {
+    int satellites = gps.satellites.value();
+    float hdop = gps.hdop.hdop();
+    
+    // Check if fix meets criteria
+    if (satellites >= GPS_SATELLITE_MIN && hdop <= GPS_HDOP_MAX) {
+      // Lock achieved!
+      local_position.latitude = gps.location.lat();
+      local_position.longitude = gps.location.lng();
+      local_position.altitude = gps.altitude.meters();
+      local_position.hdop = hdop;
+      local_position.fix = true;
+      gps_state.searching = false;
+      gps_state.locked = true;
+      gps_state.fix_achieved = true;
+      
+      // Print lock confirmation once
+      if (!local_position.fix_announced) {
+        local_position.fix_announced = true;
+        Serial.println("\n[GPS] ✓✓✓ 3D FIX LOCKED ✓✓✓");
+        Serial.print("  Satellites: ");
+        Serial.println(satellites);
+        Serial.print("  HDOP: ");
+        Serial.println(hdop, 2);
+        Serial.print("  Lat: ");
+        Serial.println(local_position.latitude, 6);
+        Serial.print("  Lon: ");
+        Serial.println(local_position.longitude, 6);
+        Serial.print("  Alt: ");
+        Serial.print(local_position.altitude);
+        Serial.println(" m");
+        Serial.print("  Direction: ");
+        Serial.println(local_position.direction);
+        Serial.println("[GPS] Position is now LOCKED until GPS_RESET\n");
+      }
+    } else {
+      // Fix does not meet criteria, continue searching
+      if (gps_state.searching) {
+        Serial.print("[GPS] ✗ Fix rejected - Sats: ");
+        Serial.print(satellites);
+        Serial.print(", HDOP: ");
+        Serial.println(hdop, 2);
+      }
+    }
+  } else if (gps_state.fix_achieved && !gps.location.isValid()) {
+    // Lost fix after having one
+    local_position.fix = false;
+    gps_state.locked = false;
+    gps_state.searching = true;
+    local_position.fix_announced = false;
+    Serial.println("[GPS] ✗ Lost GPS fix - searching again...");
   }
 }
 
@@ -494,6 +552,9 @@ void handle_serial_command() {
   else if (command == "MAVLINK_STATS") {
     print_mavlink_stats();
   }
+  else if (command == "GPS_RESET") {
+    reset_gps_lock();
+  }
   else if (command.startsWith("SET LAT")) {
     if (command.length() > 8) {
       double lat = command.substring(8).toDouble();
@@ -529,6 +590,16 @@ void handle_serial_command() {
   }
 }
 
+void reset_gps_lock() {
+  Serial.println("[GPS] GPS lock reset - searching for new 3D fix...");
+  gps_state.locked = false;
+  gps_state.searching = true;
+  gps_state.fix_achieved = false;
+  local_position.fix = false;
+  local_position.fix_announced = false;
+  local_position.hdop = 999.0;
+}
+
 void print_command_help() {
   Serial.println("\n========== ANTENNA TRACKER COMMANDS ==========");
   Serial.println("N                  - Set direction to NORTH");
@@ -539,6 +610,7 @@ void print_command_help() {
   Serial.println("HELP               - Print this help message");
   Serial.println("CALIBRATE          - Run servo calibration");
   Serial.println("MAVLINK_STATS      - Print MAVLink debug statistics");
+  Serial.println("GPS_RESET          - Re-enable GPS lock search");
   Serial.println("SET LAT <value>    - Manually set local latitude");
   Serial.println("SET LON <value>    - Manually set local longitude");
   Serial.println("SET ALT <value>    - Manually set local altitude (meters)");
@@ -548,7 +620,15 @@ void print_command_help() {
 void print_system_status() {
   Serial.println("\n========== SYSTEM STATUS ==========");
   
-  Serial.println("--- LOCAL POSITION ---");
+  Serial.println("--- LOCAL POSITION (GPS) ---");
+  Serial.print("Status:    ");
+  if (gps_state.locked) {
+    Serial.println("🔒 LOCKED");
+  } else if (gps_state.searching) {
+    Serial.println("🔍 SEARCHING");
+  } else {
+    Serial.println("❌ UNLOCKED");
+  }
   Serial.print("Latitude:  ");
   Serial.println(local_position.latitude, 6);
   Serial.print("Longitude: ");
@@ -556,6 +636,8 @@ void print_system_status() {
   Serial.print("Altitude:  ");
   Serial.print(local_position.altitude);
   Serial.println(" m");
+  Serial.print("HDOP:      ");
+  Serial.println(local_position.hdop, 2);
   Serial.print("Direction: ");
   Serial.println(local_position.direction);
   Serial.print("GPS Fix:   ");
