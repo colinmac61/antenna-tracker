@@ -39,7 +39,7 @@ const float GPS_HDOP_MAX = 1.4;        // Good fix threshold
 // Servo Calibration (adjust based on your servos)
 const int AZIMUTH_MIN_US = 400;    // Microseconds for min position (270 degrees West)
 const int AZIMUTH_MAX_US = 2400;    // Microseconds for max position (90 degrees East)
-const int ELEVATION_MIN_US = 400;  // Microseconds for min position (0 degrees Down)
+const int ELEVATION_MIN_US = 800;  // Microseconds for min position (0 degrees Down)
 const int ELEVATION_MAX_US = 2400;  // Microseconds for max position (90 degrees Up)
 
 // Telemetry timeout (milliseconds)
