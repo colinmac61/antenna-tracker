@@ -33,6 +33,9 @@ const int GPS_TX_PIN = 12;
 #define BT_RX 5  // Physical Pin D2 (HC-05 TXD)
 #define BT_TX 6  // Physical Pin D3 (HC-05 RXD)
 
+#define RXD2 8
+#define TXD2 7
+
 // GPS Lock Configuration
 const int GPS_SATELLITE_MIN = 8;       // Minimum satellites for fix
 const float GPS_HDOP_MAX = 1.4;        // Maximum acceptable HDOP (good fix)
@@ -50,6 +53,9 @@ const unsigned long MAVLINK_TIMEOUT_MS = 5000;  // Stop tracking if no data for 
 WiFiUDP udp;
 TinyGPSPlus gps;
 HardwareSerial SerialGPS(2);
+HardwareSerial SerialMav(0);   // UART for wired ELRS backpack
+enum TelemetrySource { TELEMETRY_NONE, TELEMETRY_UDP, TELEMETRY_UART };
+TelemetrySource telemetry_source = TELEMETRY_NONE;
 
 // Servo objects for hardware PWM control
 Servo azimuthServo;
@@ -153,6 +159,15 @@ void setup() {
   } else {
     Serial.println("[UDP] ✗ Failed to initialize UDP");
   }
+ 
+  if (WiFi.status() == WL_CONNECTED && udp.begin(udp_port)) {
+  telemetry_source = TELEMETRY_UDP;
+  Serial.println("[TELEM] Using WiFi UDP telemetry");
+} else {
+  SerialMav.begin(115200, SERIAL_8N1, RXD2, TXD2);
+  telemetry_source = TELEMETRY_UART;
+  Serial.println("[TELEM] WiFi/UDP unavailable, using wired backpack UART");
+}
   
   // Initialize GPS lock state
   gps_state.locked = false;
@@ -309,36 +324,48 @@ void update_local_gps() {
 
 // ==================== MAVLINK FUNCTIONS ====================
 void receive_mavlink_data() {
-  int packet_len = udp.parsePacket();
-  if (packet_len) {
+  mavlink_message_t msg;
+  mavlink_status_t status;
+
+  if (telemetry_source == TELEMETRY_UDP) {
+    int packet_len = udp.parsePacket();
+    if (!packet_len) return;
+
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
     int len = udp.read(buf, MAVLINK_MAX_PACKET_LEN);
-    
-    mavlink_message_t msg;
-    mavlink_status_t status;
-    
     mavlink_stats.total_packets_received++;
-    
+
     int decode_count = 0;
     for (int i = 0; i < len; i++) {
       if (mavlink_parse_char(MAVLINK_COMM_0, buf[i], &msg, &status)) {
         decode_count++;
         mavlink_stats.successful_decodes++;
         mavlink_stats.last_message_id = msg.msgid;
-
-        // Only display and process position messages.
         if (msg.msgid == MAVLINK_MSG_ID_GPS_RAW_INT ||
             msg.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT) {
-          Serial.print("[MAVLink] MSG_ID: ");
-          Serial.println(msg.msgid);
           process_mavlink_message(&msg);
         }
       }
     }
-    
-    if (decode_count == 0) {
-      mavlink_stats.failed_decodes++;
+    if (decode_count == 0) mavlink_stats.failed_decodes++;
+    return;
+  }
+
+  if (telemetry_source == TELEMETRY_UART) {
+    int decode_count = 0;
+    while (SerialMav.available()) {
+      uint8_t c = (uint8_t)SerialMav.read();
+      if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
+        decode_count++;
+        mavlink_stats.successful_decodes++;
+        mavlink_stats.last_message_id = msg.msgid;
+        if (msg.msgid == MAVLINK_MSG_ID_GPS_RAW_INT ||
+            msg.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT) {
+          process_mavlink_message(&msg);
+        }
+      }
     }
+    if (decode_count > 0) mavlink_stats.total_packets_received++;
   }
 }
 
@@ -692,6 +719,10 @@ void print_system_status() {
     Serial.print(WiFi.RSSI());
     Serial.println(" dBm");
   }
+  Serial.print("Telemetry: ");
+  if (telemetry_source == TELEMETRY_UDP) Serial.println("WiFi UDP");
+  else if (telemetry_source == TELEMETRY_UART) Serial.println("Wired UART Backpack");
+  else Serial.println("None");
   
   Serial.println("\n===================================\n");
 }
