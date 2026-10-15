@@ -388,10 +388,11 @@ void process_mavlink_message(mavlink_message_t* msg) {
 void handle_global_position_int(mavlink_message_t* msg) {
   mavlink_global_position_int_t pos;
   mavlink_msg_global_position_int_decode(msg, &pos);
-  
-  uav_position.latitude = pos.lat / 1e7;  // Convert from int to degrees
+
+  uav_position.latitude = pos.lat / 1e7;
   uav_position.longitude = pos.lon / 1e7;
-  uav_position.altitude = pos.alt / 1000.0;  // Convert from mm to meters
+  // Altitude intentionally NOT taken from ID 33 (baro/EKF reference);
+  // tracker uses raw GPS MSL, so use GPS_RAW_INT alt for consistency.
   uav_position.position_valid = true;
   uav_position.last_update = millis();
 }
@@ -399,13 +400,10 @@ void handle_global_position_int(mavlink_message_t* msg) {
 void handle_gps_raw_int(mavlink_message_t* msg) {
   mavlink_gps_raw_int_t gps_raw;
   mavlink_msg_gps_raw_int_decode(msg, &gps_raw);
-  
-  // Extract GPS data (coordinates are in degrees * 1e7)
+
   uav_position.latitude = gps_raw.lat / 1e7;
   uav_position.longitude = gps_raw.lon / 1e7;
-  // NOTE: Intentionally do not update altitude here to avoid conflicting
-  // altitude references between GPS_RAW_INT (24) and GLOBAL_POSITION_INT (33).
-  // uav_position.altitude remains sourced from GLOBAL_POSITION_INT.
+  uav_position.altitude = gps_raw.alt / 1000.0;  // mm -> m, GPS MSL
   uav_position.position_valid = true;
   uav_position.last_update = millis();
 }
