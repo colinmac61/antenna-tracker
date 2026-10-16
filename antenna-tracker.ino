@@ -88,6 +88,8 @@ struct {
   unsigned long last_update;
 } uav_position;
 
+double uav_alt_offset = 0.0;
+
 // Tracking angles
 struct {
   double azimuth;
@@ -389,10 +391,14 @@ void handle_global_position_int(mavlink_message_t* msg) {
   mavlink_global_position_int_t pos;
   mavlink_msg_global_position_int_decode(msg, &pos);
 
-  uav_position.latitude = pos.lat / 1e7;
+  uav_position.latitude  = pos.lat / 1e7;
   uav_position.longitude = pos.lon / 1e7;
-  // Altitude intentionally NOT taken from ID 33 (baro/EKF reference);
-  // tracker uses raw GPS MSL, so use GPS_RAW_INT alt for consistency.
+
+  // fallback altitude if GPS_RAW_INT altitude missing/zero
+  if (uav_position.altitude == 0.0 && pos.alt != 0) {
+    uav_position.altitude = pos.alt / 1000.0;
+  }
+
   uav_position.position_valid = true;
   uav_position.last_update = millis();
 }
@@ -401,9 +407,14 @@ void handle_gps_raw_int(mavlink_message_t* msg) {
   mavlink_gps_raw_int_t gps_raw;
   mavlink_msg_gps_raw_int_decode(msg, &gps_raw);
 
-  uav_position.latitude = gps_raw.lat / 1e7;
+  uav_position.latitude  = gps_raw.lat / 1e7;
   uav_position.longitude = gps_raw.lon / 1e7;
-  uav_position.altitude = gps_raw.alt / 1000.0;  // mm -> m, GPS MSL
+
+  // primary altitude source (mm -> m)
+  if (gps_raw.alt != 0) {
+    uav_position.altitude = gps_raw.alt / 1000.0;
+  }
+
   uav_position.position_valid = true;
   uav_position.last_update = millis();
 }
@@ -435,7 +446,7 @@ void calculate_tracking_angles() {
   // Calculate distance and bearing from tracker to UAV
   double delta_lat = radians(uav_position.latitude - local_position.latitude);
   double delta_lon = radians(uav_position.longitude - local_position.longitude);
-  double delta_alt = uav_position.altitude - local_position.altitude;
+  double delta_alt = (uav_position.altitude - uav_alt_offset) - local_position.altitude;
 
   // Debug altitude references to diagnose elevation behavior
   Serial.print("[CALC] Alt check -> UAV: ");
