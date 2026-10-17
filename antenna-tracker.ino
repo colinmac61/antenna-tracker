@@ -1,4 +1,10 @@
-#define Serial Serial1 
+#define Serial Serial1
+#define BT_RX 5  // Physical Pin D2 (HC-05 TXD) Bluetooth serial connection
+#define BT_TX 6  // Physical Pin D3 (HC-05 RXD)
+
+// Wired ELRS Backpack Receiver (outputs MAVLink) - Connected via ESPNOW from the ELRS Tx
+#define RXD2 8
+#define TXD2 7
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
@@ -26,25 +32,22 @@ const int ELEVATION_SERVO_PIN = 14; // Servo for vertical rotation (Up/Down)
 
 const float gearRatio = 2.0; 
 
-// GPIO Pins for GPS (Serial2)
+// GPIO Pins for GPS (UART2)
 const int GPS_RX_PIN = 11;
 const int GPS_TX_PIN = 12;
 
-#define BT_RX 5  // Physical Pin D2 (HC-05 TXD)
-#define BT_TX 6  // Physical Pin D3 (HC-05 RXD)
+// Backpack serial link
+const unsigned long BACKPACK_BAUD = 115200;
 
-#define RXD2 8
-#define TXD2 7
-
-// GPS Lock Configuration
+// GPS lock configuration
 const int GPS_SATELLITE_MIN = 8;       // Minimum satellites for fix
-const float GPS_HDOP_MAX = 1.4;        // Maximum acceptable HDOP (good fix)
+const float GPS_HDOP_MAX = 1.4;        // Good fix threshold
 
 // Servo Calibration (adjust based on your servos)
-//const int AZIMUTH_MIN_US = 400;    // Microseconds for min position (270 degrees West)
-//const int AZIMUTH_MAX_US = 2400;    // Microseconds for max position (90 degrees East)
-//const int ELEVATION_MIN_US = 400;  // Microseconds for min position (0 degrees Down)
-//const int ELEVATION_MAX_US = 2400;  // Microseconds for max position (90 degrees Up)
+const int AZIMUTH_MIN_US = 400;    // Microseconds for min position (270 degrees West)
+const int AZIMUTH_MAX_US = 2400;    // Microseconds for max position (90 degrees East)
+const int ELEVATION_MIN_US = 800;  // Microseconds for min position (0 degrees Down)
+const int ELEVATION_MAX_US = 2400;  // Microseconds for max position (90 degrees Up)
 
 // Telemetry timeout (milliseconds)
 const unsigned long MAVLINK_TIMEOUT_MS = 5000;  // Stop tracking if no data for 5 seconds
@@ -52,10 +55,16 @@ const unsigned long MAVLINK_TIMEOUT_MS = 5000;  // Stop tracking if no data for 
 // ==================== GLOBAL VARIABLES ====================
 WiFiUDP udp;
 TinyGPSPlus gps;
-HardwareSerial SerialGPS(2);
-HardwareSerial SerialMav(0);   // UART for wired ELRS backpack
-enum TelemetrySource { TELEMETRY_NONE, TELEMETRY_UDP, TELEMETRY_UART };
-TelemetrySource telemetry_source = TELEMETRY_NONE;
+HardwareSerial SerialGPS(2);       // UART2 -> GPS
+HardwareSerial SerialBackpack(0);  // UART0 -> wired ELRS backpack 
+
+// Telemetry source selected at startup
+enum TelemetrySource {
+  TELEM_NONE,
+  TELEM_WIFI,
+  TELEM_BACKPACK
+};
+TelemetrySource telemetry_source = TELEM_NONE;
 
 // Servo objects for hardware PWM control
 Servo azimuthServo;
@@ -63,9 +72,9 @@ Servo elevationServo;
 
 // GPS Lock State
 struct {
-  boolean locked;              // True = position is locked, no further updates
-  boolean searching;            // True = actively searching for fix
-  boolean fix_achieved;         // True = fix was obtained at least once
+  boolean locked;      // Once a valid fixed position is accepted, it stays locked forever
+  boolean searching;   // True while waiting for a valid GPS lock
+  boolean fix_achieved;
 } gps_state;
 
 // Local tracker position
@@ -73,10 +82,10 @@ struct {
   double latitude;
   double longitude;
   double altitude;
-  float hdop;                   // Horizontal Dilution of Precision
-  char direction;               // 'N', 'S', 'E', 'W'
+  float hdop;
+  char direction;  // 'N', 'S', 'E', 'W'
   boolean fix;
-  boolean fix_announced;        // Track if we've announced the fix once
+  boolean fix_announced;  // Track if we've announced the fix once
 } local_position;
 
 // Remote UAV position from MAVLink
@@ -88,14 +97,16 @@ struct {
   unsigned long last_update;
 } uav_position;
 
-double uav_alt_offset = 0.0;
-
 // Tracking angles
 struct {
   double azimuth;
   double elevation;
   boolean valid;
 } tracking_angles;
+
+// Tracking offsets for field tuning
+double azimuth_offset = 0.0;
+double elevation_offset = 0.0;
 
 // Timing control
 unsigned long lastServoUpdate = 0;
@@ -111,11 +122,9 @@ struct {
 
 // ==================== SETUP ====================
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(57600, SERIAL_8N1, BT_RX, BT_TX); //establish connection to HC-05 Bluetooth Serial
   delay(1000);
   
-  Serial1.begin(57600, SERIAL_8N1, BT_RX, BT_TX);
-
   Serial.println("\n\n=== ANTENNA TRACKER STARTUP ===");
   Serial.println("Initializing systems...");
   
@@ -124,10 +133,8 @@ void setup() {
   Serial.println("[GPS] Serial initialized at 115200 baud");
   
   // Initialize servo pins with hardware PWM
-  //azimuthServo.attach(AZIMUTH_SERVO_PIN, AZIMUTH_MIN_US, AZIMUTH_MAX_US);
-  azimuthServo.attach(AZIMUTH_SERVO_PIN);
-  //elevationServo.attach(ELEVATION_SERVO_PIN, ELEVATION_MIN_US, ELEVATION_MAX_US);
-  elevationServo.attach(ELEVATION_SERVO_PIN);
+  azimuthServo.attach(AZIMUTH_SERVO_PIN, AZIMUTH_MIN_US, AZIMUTH_MAX_US);
+  elevationServo.attach(ELEVATION_SERVO_PIN, ELEVATION_MIN_US, ELEVATION_MAX_US);
   Serial.println("[SERVO] Servo pins initialized with hardware PWM");
   
   // Initialize WiFi
@@ -150,26 +157,30 @@ void setup() {
     Serial.println("\n[WiFi] ✓ Connected successfully");
     Serial.print("[WiFi] IP Address: ");
     Serial.println(WiFi.localIP());
+
+    // Start UDP
+    if (udp.begin(udp_port)) {
+      Serial.print("[UDP] ✓ Listening on port ");
+      Serial.println(udp_port);
+      telemetry_source = TELEM_WIFI;
+    } else {
+      Serial.println("[UDP] ✗ Failed to initialize UDP");
+    }
   } else {
     Serial.println("\n[WiFi] ✗ Failed to connect");
   }
-  
-  // Start UDP
-  if (udp.begin(udp_port)) {
-    Serial.print("[UDP] ✓ Listening on port ");
-    Serial.println(udp_port);
-  } else {
-    Serial.println("[UDP] ✗ Failed to initialize UDP");
+
+  // WiFi/UDP unavailable -> try ESPNOW connection, used for CRSF telemetry
+  if (telemetry_source != TELEM_WIFI) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    SerialBackpack.begin(BACKPACK_BAUD, SERIAL_8N1, RXD2, TXD2);
+    telemetry_source = TELEM_BACKPACK;
+    Serial.println("[BACKPACK] WiFi unavailable - using wired backpack UART for MAVLink");
+    Serial.print("[BACKPACK] ✓ Listening at ");
+    Serial.print(BACKPACK_BAUD);
+    Serial.println(" baud");
   }
- 
-  if (WiFi.status() == WL_CONNECTED && udp.begin(udp_port)) {
-  telemetry_source = TELEMETRY_UDP;
-  Serial.println("[TELEM] Using WiFi UDP telemetry");
-} else {
-  SerialMav.begin(115200, SERIAL_8N1, RXD2, TXD2);
-  telemetry_source = TELEMETRY_UART;
-  Serial.println("[TELEM] WiFi/UDP unavailable, using wired backpack UART");
-}
   
   // Initialize GPS lock state
   gps_state.locked = false;
@@ -204,6 +215,8 @@ void setup() {
   mavlink_stats.last_message_id = 0;
   
   Serial.println("[SYSTEM] Initialization complete");
+  Serial.print("[SYSTEM] Telemetry source: ");
+  Serial.println(telemetry_source_name());
   Serial.println("[GPS] Searching for 3D fix with 8+ satellites and HDOP ≤ 1.4...\n");
   print_command_help();
 }
@@ -244,49 +257,32 @@ void loop() {
 
 // ==================== GPS FUNCTIONS ====================
 void update_local_gps() {
+  // If GPS has already been accepted and fixed, freeze the value permanently.
+  if (gps_state.locked) {
+    return;
+  }
+
   // Read available GPS data
   while (SerialGPS.available()) {
     char c = SerialGPS.read();
     gps.encode(c);
   }
   
-  // If GPS is already locked, don't process updates
-  if (gps_state.locked) {
-    return;
-  }
-  
-  // Check for satellite and fix updates
-  if (gps.satellites.isUpdated()) {
-    int sats = gps.satellites.value();
-    Serial.print("[GPS] Satellites: ");
-    Serial.println(sats);
-    
-    // Display satellite status
-    if (sats < GPS_SATELLITE_MIN) {
-      Serial.print("[GPS] ✗ Insufficient satellites (need ");
-      Serial.print(GPS_SATELLITE_MIN);
-      Serial.println(")");
-    }
-  }
-  
-  // Check if we have a new valid position with 3D fix
+  // Check if we have a valid 3D fix with enough satellites and a good HDOP
   if (gps.location.isUpdated() && gps.location.isValid() && gps.altitude.isValid()) {
     int satellites = gps.satellites.value();
     float hdop = gps.hdop.hdop();
-    
-    // Check if fix meets criteria
+    local_position.hdop = hdop;
+
     if (satellites >= GPS_SATELLITE_MIN && hdop <= GPS_HDOP_MAX) {
-      // Lock achieved!
       local_position.latitude = gps.location.lat();
       local_position.longitude = gps.location.lng();
       local_position.altitude = gps.altitude.meters();
-      local_position.hdop = hdop;
       local_position.fix = true;
       gps_state.searching = false;
       gps_state.locked = true;
       gps_state.fix_achieved = true;
-      
-      // Print lock confirmation once
+
       if (!local_position.fix_announced) {
         local_position.fix_announced = true;
         Serial.println("\n[GPS] ✓✓✓ 3D FIX LOCKED ✓✓✓");
@@ -303,71 +299,79 @@ void update_local_gps() {
         Serial.println(" m");
         Serial.print("  Direction: ");
         Serial.println(local_position.direction);
-        Serial.println("[GPS] Position is now LOCKED until GPS_RESET\n");
+        Serial.println("[GPS] Position is now permanently locked until reboot\n");
       }
     } else {
-      // Fix does not meet criteria, continue searching
-      if (gps_state.searching) {
-        Serial.print("[GPS] ✗ Fix rejected - Sats: ");
-        Serial.print(satellites);
-        Serial.print(", HDOP: ");
-        Serial.println(hdop, 2);
-      }
+      Serial.print("[GPS] ✗ Fix rejected - Sats: ");
+      Serial.print(satellites);
+      Serial.print(", HDOP: ");
+      Serial.println(hdop, 2);
     }
-  } else if (gps_state.fix_achieved && !gps.location.isValid()) {
-    // Lost fix after having one
-    local_position.fix = false;
-    gps_state.locked = false;
-    gps_state.searching = true;
-    local_position.fix_announced = false;
-    Serial.println("[GPS] ✗ Lost GPS fix - searching again...");
+  }
+
+  if (gps.satellites.isUpdated()) {
+    Serial.print("[GPS] Satellites: ");
+    Serial.println(gps.satellites.value());
   }
 }
 
 // ==================== MAVLINK FUNCTIONS ====================
-void receive_mavlink_data() {
+const char* telemetry_source_name() {
+  switch (telemetry_source) {
+    case TELEM_WIFI:     return "WiFi (UDP)";
+    case TELEM_BACKPACK: return "Wired Backpack (UART)";
+    default:             return "None";
+  }
+}
+
+// Parse a block of raw bytes as MAVLink. Returns number of messages decoded.
+int parse_mavlink_bytes(const uint8_t* buf, int len, uint8_t channel) {
   mavlink_message_t msg;
   mavlink_status_t status;
+  int decode_count = 0;
 
-  if (telemetry_source == TELEMETRY_UDP) {
-    int packet_len = udp.parsePacket();
-    if (!packet_len) return;
+  for (int i = 0; i < len; i++) {
+    if (mavlink_parse_char(channel, buf[i], &msg, &status)) {
+      decode_count++;
+      mavlink_stats.successful_decodes++;
+      mavlink_stats.last_message_id = msg.msgid;
 
-    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    int len = udp.read(buf, MAVLINK_MAX_PACKET_LEN);
-    mavlink_stats.total_packets_received++;
-
-    int decode_count = 0;
-    for (int i = 0; i < len; i++) {
-      if (mavlink_parse_char(MAVLINK_COMM_0, buf[i], &msg, &status)) {
-        decode_count++;
-        mavlink_stats.successful_decodes++;
-        mavlink_stats.last_message_id = msg.msgid;
-        if (msg.msgid == MAVLINK_MSG_ID_GPS_RAW_INT ||
-            msg.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT) {
-          process_mavlink_message(&msg);
-        }
+      // Only display and process position messages.
+      if (msg.msgid == MAVLINK_MSG_ID_GPS_RAW_INT ||
+          msg.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT) {
+        Serial.print("[MAVLink] MSG_ID: ");
+        Serial.println(msg.msgid);
+        process_mavlink_message(&msg);
       }
     }
-    if (decode_count == 0) mavlink_stats.failed_decodes++;
-    return;
   }
+  return decode_count;
+}
 
-  if (telemetry_source == TELEMETRY_UART) {
-    int decode_count = 0;
-    while (SerialMav.available()) {
-      uint8_t c = (uint8_t)SerialMav.read();
-      if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
-        decode_count++;
-        mavlink_stats.successful_decodes++;
-        mavlink_stats.last_message_id = msg.msgid;
-        if (msg.msgid == MAVLINK_MSG_ID_GPS_RAW_INT ||
-            msg.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT) {
-          process_mavlink_message(&msg);
-        }
+void receive_mavlink_data() {
+  if (telemetry_source == TELEM_WIFI) {
+    int packet_len = udp.parsePacket();
+    if (packet_len) {
+      uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+      int len = udp.read(buf, MAVLINK_MAX_PACKET_LEN);
+
+      mavlink_stats.total_packets_received++;
+
+      if (parse_mavlink_bytes(buf, len, MAVLINK_COMM_0) == 0) {
+        mavlink_stats.failed_decodes++;
       }
     }
-    if (decode_count > 0) mavlink_stats.total_packets_received++;
+  }
+  else if (telemetry_source == TELEM_BACKPACK) {
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+    int len = 0;
+    while (SerialBackpack.available() && len < MAVLINK_MAX_PACKET_LEN) {
+      buf[len++] = (uint8_t)SerialBackpack.read();
+    }
+    if (len > 0) {
+      mavlink_stats.total_packets_received++;
+      parse_mavlink_bytes(buf, len, MAVLINK_COMM_1);
+    }
   }
 }
 
@@ -390,15 +394,10 @@ void process_mavlink_message(mavlink_message_t* msg) {
 void handle_global_position_int(mavlink_message_t* msg) {
   mavlink_global_position_int_t pos;
   mavlink_msg_global_position_int_decode(msg, &pos);
-
-  uav_position.latitude  = pos.lat / 1e7;
+  
+  uav_position.latitude = pos.lat / 1e7;  // Convert from int to degrees
   uav_position.longitude = pos.lon / 1e7;
-
-  // fallback altitude if GPS_RAW_INT altitude missing/zero
-  if (uav_position.altitude == 0.0 && pos.alt != 0) {
-    uav_position.altitude = pos.alt / 1000.0;
-  }
-
+  uav_position.altitude = pos.alt / 1000.0;  // Convert from mm to meters
   uav_position.position_valid = true;
   uav_position.last_update = millis();
 }
@@ -406,15 +405,11 @@ void handle_global_position_int(mavlink_message_t* msg) {
 void handle_gps_raw_int(mavlink_message_t* msg) {
   mavlink_gps_raw_int_t gps_raw;
   mavlink_msg_gps_raw_int_decode(msg, &gps_raw);
-
-  uav_position.latitude  = gps_raw.lat / 1e7;
+  
+  // Extract GPS data (coordinates are in degrees * 1e7, altitude in mm)
+  uav_position.latitude = gps_raw.lat / 1e7;
   uav_position.longitude = gps_raw.lon / 1e7;
-
-  // primary altitude source (mm -> m)
-  if (gps_raw.alt != 0) {
-    uav_position.altitude = gps_raw.alt / 1000.0;
-  }
-
+  uav_position.altitude = gps_raw.alt / 1000.0;  // Convert mm to meters
   uav_position.position_valid = true;
   uav_position.last_update = millis();
 }
@@ -446,15 +441,7 @@ void calculate_tracking_angles() {
   // Calculate distance and bearing from tracker to UAV
   double delta_lat = radians(uav_position.latitude - local_position.latitude);
   double delta_lon = radians(uav_position.longitude - local_position.longitude);
-  double delta_alt = (uav_position.altitude - uav_alt_offset) - local_position.altitude;
-
-  // Debug altitude references to diagnose elevation behavior
-  Serial.print("[CALC] Alt check -> UAV: ");
-  Serial.print(uav_position.altitude);
-  Serial.print(" m, Tracker: ");
-  Serial.print(local_position.altitude);
-  Serial.print(" m, Delta: ");
-  Serial.println(delta_alt);
+  double delta_alt = uav_position.altitude - local_position.altitude;
   
   // Haversine formula for distance
   double a = sin(delta_lat / 2) * sin(delta_lat / 2) +
@@ -483,9 +470,14 @@ void calculate_tracking_angles() {
   
   // Ensure elevation is 0-90
   elevation = constrain(elevation, 0, 90);
-  
-  tracking_angles.azimuth = bearing;
-  tracking_angles.elevation = elevation;
+
+  // Apply manual tracking trim offsets (fine tuning)
+  tracking_angles.azimuth = bearing + azimuth_offset;
+  tracking_angles.elevation = elevation + elevation_offset;
+
+  if (tracking_angles.azimuth < 0) tracking_angles.azimuth += 360;
+  if (tracking_angles.azimuth >= 360) tracking_angles.azimuth -= 360;
+  tracking_angles.elevation = constrain(tracking_angles.elevation, 0, 90);
   tracking_angles.valid = true;
   
   Serial.print("[CALC] ✓ Distance: ");
@@ -496,6 +488,11 @@ void calculate_tracking_angles() {
   Serial.println(" °");
   Serial.print("[CALC] ✓ Elevation: ");
   Serial.print(tracking_angles.elevation);
+  Serial.println(" °");
+  Serial.print("[CALC] ✓ Azimuth Offset: ");
+  Serial.print(azimuth_offset);
+  Serial.print(" °, Elevation Offset: ");
+  Serial.print(elevation_offset);
   Serial.println(" °");
 }
 
@@ -534,9 +531,8 @@ void update_servo_positions() {
   }
 
   // Map relative bearing to servo angle: West=-90° -> 0°, North=0° -> 90°, East=+90° -> 180°
-  //int azimuth_angle = constrain((int)round(relative_azimuth + 90.0), 0, 180);
   int calculated_angle = constrain((int)round(relative_azimuth + 90.0), 0, 180);
-  int azimuth_angle = 180 - calculated_angle; // This corrects the azimuth as the servo is mounted inverted
+  int azimuth_angle = 180 - calculated_angle; // Corrects for the servo orientation on the physical mount
 
   // Elevation follows 0..90° directly, but is scaled by gear ratio if needed.
   int elevation_angle = constrain((int)round(tracking_angles.elevation * gearRatio), 0, 180);
@@ -598,8 +594,34 @@ void handle_serial_command() {
   else if (command == "MAVLINK_STATS") {
     print_mavlink_stats();
   }
-  else if (command == "GPS_RESET") {
-    reset_gps_lock();
+  else if (command == "OFFSET_RESET") {
+    azimuth_offset = 0.0;
+    elevation_offset = 0.0;
+    Serial.println("[CMD] Azimuth and elevation alignment offsets reset to 0°");
+  }
+  else if (command.startsWith("AZ_OFFSET")) {
+    int index = command.indexOf(' ');
+    if (index >= 0) {
+      float value = command.substring(index + 1).toFloat();
+      azimuth_offset = value;
+      Serial.print("[CMD] Azimuth offset set to: ");
+      Serial.print(azimuth_offset, 2);
+      Serial.println("°");
+    } else {
+      Serial.println("[CMD] Usage: AZ_OFFSET <value>");
+    }
+  }
+  else if (command.startsWith("EL_OFFSET")) {
+    int index = command.indexOf(' ');
+    if (index >= 0) {
+      float value = command.substring(index + 1).toFloat();
+      elevation_offset = value;
+      Serial.print("[CMD] Elevation offset set to: ");
+      Serial.print(elevation_offset, 2);
+      Serial.println("°");
+    } else {
+      Serial.println("[CMD] Usage: EL_OFFSET <value>");
+    }
   }
   else if (command.startsWith("SET LAT")) {
     if (command.length() > 8) {
@@ -636,16 +658,6 @@ void handle_serial_command() {
   }
 }
 
-void reset_gps_lock() {
-  Serial.println("[GPS] GPS lock reset - searching for new 3D fix...");
-  gps_state.locked = false;
-  gps_state.searching = true;
-  gps_state.fix_achieved = false;
-  local_position.fix = false;
-  local_position.fix_announced = false;
-  local_position.hdop = 999.0;
-}
-
 void print_command_help() {
   Serial.println("\n========== ANTENNA TRACKER COMMANDS ==========");
   Serial.println("N                  - Set direction to NORTH");
@@ -656,7 +668,9 @@ void print_command_help() {
   Serial.println("HELP               - Print this help message");
   Serial.println("CALIBRATE          - Run servo calibration");
   Serial.println("MAVLINK_STATS      - Print MAVLink debug statistics");
-  Serial.println("GPS_RESET          - Re-enable GPS lock search");
+  Serial.println("AZ_OFFSET <value>  - Set azimuth trim offset in degrees");
+  Serial.println("EL_OFFSET <value>  - Set elevation trim offset in degrees");
+  Serial.println("OFFSET_RESET       - Reset both trim offsets to zero");
   Serial.println("SET LAT <value>    - Manually set local latitude");
   Serial.println("SET LON <value>    - Manually set local longitude");
   Serial.println("SET ALT <value>    - Manually set local altitude (meters)");
@@ -688,8 +702,18 @@ void print_system_status() {
   Serial.println(local_position.direction);
   Serial.print("GPS Fix:   ");
   Serial.println(local_position.fix ? "✓ Yes" : "✗ No");
+
+  Serial.println("\n--- TRACKING TRIM ---");
+  Serial.print("Azimuth Offset:   ");
+  Serial.print(azimuth_offset, 2);
+  Serial.println(" °");
+  Serial.print("Elevation Offset: ");
+  Serial.print(elevation_offset, 2);
+  Serial.println(" °");
   
   Serial.println("\n--- UAV POSITION ---");
+  Serial.print("Telemetry Source: ");
+  Serial.println(telemetry_source_name());
   Serial.print("Latitude:  ");
   Serial.println(uav_position.latitude, 6);
   Serial.print("Longitude: ");
@@ -719,26 +743,32 @@ void print_system_status() {
   Serial.println(tracking_angles.valid ? "✓ Yes" : "✗ No");
   
   Serial.println("\n--- NETWORK ---");
-  Serial.print("WiFi Status: ");
-  Serial.println(WiFi.status() == WL_CONNECTED ? "✓ Connected" : "✗ Disconnected");
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("IP Address:  ");
-    Serial.println(WiFi.localIP());
-    Serial.print("Signal:      ");
-    Serial.print(WiFi.RSSI());
-    Serial.println(" dBm");
+  Serial.print("Telemetry Source: ");
+  Serial.println(telemetry_source_name());
+  if (telemetry_source == TELEM_BACKPACK) {
+    Serial.print("Backpack UART: ");
+    Serial.print(BACKPACK_BAUD);
+    Serial.println(" baud (RX=8, TX=7)");
+  } else {
+    Serial.print("WiFi Status: ");
+    Serial.println(WiFi.status() == WL_CONNECTED ? "✓ Connected" : "✗ Disconnected");
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print("IP Address:  ");
+      Serial.println(WiFi.localIP());
+      Serial.print("Signal:      ");
+      Serial.print(WiFi.RSSI());
+      Serial.println(" dBm");
+    }
   }
-  Serial.print("Telemetry: ");
-  if (telemetry_source == TELEMETRY_UDP) Serial.println("WiFi UDP");
-  else if (telemetry_source == TELEMETRY_UART) Serial.println("Wired UART Backpack");
-  else Serial.println("None");
   
   Serial.println("\n===================================\n");
 }
 
 void print_mavlink_stats() {
   Serial.println("\n========== MAVLINK STATISTICS ==========");
-  Serial.print("Total UDP Packets:     ");
+  Serial.print("Telemetry Source:      ");
+  Serial.println(telemetry_source_name());
+  Serial.print("Total Packets/Chunks:  ");
   Serial.println(mavlink_stats.total_packets_received);
   Serial.print("Successful Decodes:    ");
   Serial.println(mavlink_stats.successful_decodes);
