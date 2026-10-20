@@ -398,6 +398,8 @@ void handle_global_position_int(mavlink_message_t* msg) {
   uav_position.latitude = pos.lat / 1e7;  // Convert from int to degrees
   uav_position.longitude = pos.lon / 1e7;
   uav_position.altitude = pos.alt / 1000.0;  // Convert from mm to meters
+  Serial.print("[DBG33] alt(m)=");
+  Serial.println(uav_position.altitude, 2);
   uav_position.position_valid = true;
   uav_position.last_update = millis();
 }
@@ -410,6 +412,8 @@ void handle_gps_raw_int(mavlink_message_t* msg) {
   uav_position.latitude = gps_raw.lat / 1e7;
   uav_position.longitude = gps_raw.lon / 1e7;
   uav_position.altitude = gps_raw.alt / 1000.0;  // Convert mm to meters
+  Serial.print("[DBG24] alt(m)=");
+  Serial.println(uav_position.altitude, 2);
   uav_position.position_valid = true;
   uav_position.last_update = millis();
 }
@@ -442,6 +446,11 @@ void calculate_tracking_angles() {
   double delta_lat = radians(uav_position.latitude - local_position.latitude);
   double delta_lon = radians(uav_position.longitude - local_position.longitude);
   double delta_alt = uav_position.altitude - local_position.altitude;
+  Serial.print("[CALC] Alt check -> UAV: ");
+  Serial.print(uav_position.altitude, 2);
+  Serial.print(" m, Tracker: "); Serial.print(local_position.altitude, 2);
+  Serial.print(" m, Delta: ");   Serial.println(delta_alt, 2);
+
   
   // Haversine formula for distance
   double a = sin(delta_lat / 2) * sin(delta_lat / 2) +
