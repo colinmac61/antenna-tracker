@@ -107,6 +107,7 @@ struct {
 // Tracking offsets for field tuning
 double azimuth_offset = 0.0;
 double elevation_offset = 0.0;
+double uav_alt_offset = 0.0;  // aligns UAV alt reference to tracker alt reference
 
 // Timing control
 unsigned long lastServoUpdate = 0;
@@ -445,7 +446,8 @@ void calculate_tracking_angles() {
   // Calculate distance and bearing from tracker to UAV
   double delta_lat = radians(uav_position.latitude - local_position.latitude);
   double delta_lon = radians(uav_position.longitude - local_position.longitude);
-  double delta_alt = uav_position.altitude - local_position.altitude;
+  //double delta_alt = uav_position.altitude - local_position.altitude;
+  double delta_alt = (uav_position.altitude - uav_alt_offset) - local_position.altitude;
   Serial.print("[CALC] Alt check -> UAV: ");
   Serial.print(uav_position.altitude, 2);
   Serial.print(" m, Tracker: "); Serial.print(local_position.altitude, 2);
@@ -594,6 +596,15 @@ void handle_serial_command() {
   else if (command == "STATUS") {
     print_system_status();
   }
+  else if (command == "ZERO_ALT") {
+    uav_alt_offset = uav_position.altitude -  local_position.altitude;
+    Serial.print("[CMD] UAV altitude offset set to: ");
+    Serial.print(uav_alt_offset, 2);
+    Serial.println(" m");
+    Serial.print("[CMD] Corrected UAV altitude now: ");
+    Serial.print(uav_position.altitude - uav_alt_offset, 2);
+    Serial.println(" m");
+  }
   else if (command == "HELP") {
     print_command_help();
   }
@@ -683,6 +694,7 @@ void print_command_help() {
   Serial.println("SET LAT <value>    - Manually set local latitude");
   Serial.println("SET LON <value>    - Manually set local longitude");
   Serial.println("SET ALT <value>    - Manually set local altitude (meters)");
+  Serial.println("ZERO_ALT           - Align UAV altitude reference to tracker");
   Serial.println("=============================================\n");
 }
 
