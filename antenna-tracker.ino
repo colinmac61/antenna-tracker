@@ -129,6 +129,11 @@ float az_current = 90.0f, el_current = 0.0f;
 float last_az_target = 90.0f, last_el_target = 0.0f;
 unsigned long lastSmoothUpdate = 0;
 
+// Verbose debug output (toggle at runtime with DEBUG ON / DEBUG OFF)
+bool debug_verbose = false;
+unsigned long lastStatusPrint = 0;
+const unsigned long STATUS_PRINT_INTERVAL = 1000;  // ms, compact status line
+
 enum RangeMode {
   RANGE_LONG,
   RANGE_MEDIUM,
@@ -275,19 +280,20 @@ void setup() {
 void loop() {
   // Read GPS data
   update_local_gps();
-  
+
   // Check for serial commands
   if (Serial.available()) {
     handle_serial_command();
   }
-  
+
   // Receive MAVLink telemetry
   receive_mavlink_data();
-  
+  smooth_servos();   // runs every pass, outside the 100 ms block
+
   // Update servo positions at regular intervals (non-blocking)
   if (millis() - lastServoUpdate >= SERVO_UPDATE_INTERVAL) {
     lastServoUpdate = millis();
-    
+
     // Calculate tracking angles if we have valid data
     if (local_position.fix && is_mavlink_data_fresh()) {
       calculate_tracking_angles();
@@ -389,8 +395,10 @@ int parse_mavlink_bytes(const uint8_t* buf, int len, uint8_t channel) {
       // Only display and process position messages.
       if (msg.msgid == MAVLINK_MSG_ID_GPS_RAW_INT ||
           msg.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT) {
-        Serial.print("[MAVLink] MSG_ID: ");
-        Serial.println(msg.msgid);
+        if (debug_verbose) {
+          Serial.print("[MAVLink] MSG_ID: ");
+          Serial.println(msg.msgid);
+        }
         process_mavlink_message(&msg);
       }
     }
@@ -448,8 +456,10 @@ void handle_global_position_int(mavlink_message_t* msg) {
   uav_position.latitude = pos.lat / 1e7;  // Convert from int to degrees
   uav_position.longitude = pos.lon / 1e7;
   uav_position.altitude = pos.alt / 1000.0;  // Convert from mm to meters
-  Serial.print("[DBG33] alt(m)=");
-  Serial.println(uav_position.altitude, 2);
+  if (debug_verbose) {
+    Serial.print("[DBG33] alt(m)=");   // use "[DBG24]" in handle_gps_raw_int
+    Serial.println(uav_position.altitude, 2);
+  }
   uav_position.position_valid = true;
   uav_position.last_update = millis();
 }
@@ -490,48 +500,51 @@ boolean is_mavlink_data_fresh() {
 
 // ==================== ANGLE CALCULATION ====================
 void calculate_tracking_angles() {
-  Serial.println("\n[CALC] Calculating tracking angles...");
-  
+  if (debug_verbose) Serial.println("\n[CALC] Calculating tracking angles...");
+
   // Calculate distance and bearing from tracker to UAV
   double delta_lat = radians(uav_position.latitude - local_position.latitude);
   double delta_lon = radians(uav_position.longitude - local_position.longitude);
-  //double delta_alt = uav_position.altitude - local_position.altitude;
   double delta_alt = (uav_position.altitude - uav_alt_offset) - local_position.altitude;
-  Serial.print("[CALC] Alt check -> UAV: ");
-  Serial.print(uav_position.altitude, 2);
-  Serial.print(" m, Tracker: "); Serial.print(local_position.altitude, 2);
-  Serial.print(" m, Delta: ");   Serial.println(delta_alt, 2);
 
-  
+  if (debug_verbose) {
+    Serial.print("[CALC] Alt check -> UAV: ");
+    Serial.print(uav_position.altitude, 2);
+    Serial.print(" m, Tracker: ");
+    Serial.print(local_position.altitude, 2);
+    Serial.print(" m, Delta: ");
+    Serial.println(delta_alt, 2);
+  }
+
   // Haversine formula for distance
   double a = sin(delta_lat / 2) * sin(delta_lat / 2) +
              cos(radians(local_position.latitude)) * cos(radians(uav_position.latitude)) *
              sin(delta_lon / 2) * sin(delta_lon / 2);
   double c = 2 * atan2(sqrt(a), sqrt(1 - a));
   double distance = 6371000 * c;  // Earth radius in meters
-  
+
   // Calculate bearing (azimuth)
   double y = sin(delta_lon) * cos(radians(uav_position.latitude));
   double x = cos(radians(local_position.latitude)) * sin(radians(uav_position.latitude)) -
              sin(radians(local_position.latitude)) * cos(radians(uav_position.latitude)) * cos(delta_lon);
   double bearing = atan2(y, x);
   bearing = degrees(bearing);
-  
+
   // Adjust bearing based on tracker direction
   bearing = adjust_bearing_for_direction(bearing);
-  
+
   // Ensure bearing is 0-360
   if (bearing < 0) bearing += 360;
   if (bearing >= 360) bearing -= 360;
-  
+
   // Calculate elevation angle
   double elevation = atan2(delta_alt, distance);
   elevation = degrees(elevation);
-  
+
   // Ensure elevation is 0-90
   elevation = constrain(elevation, 0, 90);
 
-  // Apply manual tracking trim offsets (fine tuning)
+  // Apply manual tracking trim offsets
   tracking_angles.azimuth = bearing + azimuth_offset;
   tracking_angles.elevation = elevation + elevation_offset;
 
@@ -539,23 +552,24 @@ void calculate_tracking_angles() {
   if (tracking_angles.azimuth >= 360) tracking_angles.azimuth -= 360;
   tracking_angles.elevation = constrain(tracking_angles.elevation, 0, 90);
   tracking_angles.valid = true;
-  
-  Serial.print("[CALC] ✓ Distance: ");
-  Serial.print(distance);
-  Serial.println(" m");
-  Serial.print("[CALC] ✓ Azimuth: ");
-  Serial.print(tracking_angles.azimuth);
-  Serial.println(" °");
-  Serial.print("[CALC] ✓ Elevation: ");
-  Serial.print(tracking_angles.elevation);
-  Serial.println(" °");
-  Serial.print("[CALC] ✓ Azimuth Offset: ");
-  Serial.print(azimuth_offset);
-  Serial.print(" °, Elevation Offset: ");
-  Serial.print(elevation_offset);
-  Serial.println(" °");
-}
 
+  if (debug_verbose) {
+    Serial.print("[CALC] ✓ Distance: ");
+    Serial.print(distance);
+    Serial.println(" m");
+    Serial.print("[CALC] ✓ Azimuth: ");
+    Serial.print(tracking_angles.azimuth);
+    Serial.println(" °");
+    Serial.print("[CALC] ✓ Elevation: ");
+    Serial.print(tracking_angles.elevation);
+    Serial.println(" °");
+    Serial.print("[CALC] ✓ Azimuth Offset: ");
+    Serial.print(azimuth_offset);
+    Serial.print(" °, Elevation Offset: ");
+    Serial.print(elevation_offset);
+    Serial.println(" °");
+  }
+}
 double adjust_bearing_for_direction(double bearing) {
   // Adjust bearing based on manual direction setting
   // N (0°) = 0°, E (90°) = 90°, S (180°) = 180°, W (270°) = 270°
@@ -605,13 +619,13 @@ void update_servo_positions() {
     last_el_target = new_el_target;
   }
 
-  Serial.print("[SERVO] Azimuth tgt: ");
-  Serial.print((int)round(az_target));
-  Serial.print("° (raw: ");
-  Serial.print(tracking_angles.azimuth);
-  Serial.print("°), Elevation tgt: ");
-  Serial.print((int)round(el_target));
-  Serial.println("°");
+  unsigned long now = millis();
+  if (debug_verbose || now - lastStatusPrint >= STATUS_PRINT_INTERVAL) {
+    lastStatusPrint = now;
+    Serial.printf("[TRK] az tgt/cur: %.1f/%.1f  el tgt/cur: %.1f/%.1f  alt(uav): %.1f m  mode: %s\n",
+                  az_target, az_current, el_target, el_current,
+                  uav_position.altitude, range_mode_name());
+  }
 }
 
 void park_servos() {
@@ -694,6 +708,14 @@ void handle_serial_command() {
   }
   else if (command == "HELP") {
     print_command_help();
+  }
+  else if (command == "DEBUG ON") {
+    debug_verbose = true;
+    Serial.println("[CMD] Verbose debug ON");
+  }
+  else if (command == "DEBUG OFF") {
+    debug_verbose = false;
+    Serial.println("[CMD] Verbose debug OFF");
   }
     else if (command.startsWith("RANGE_MODE")) {
     int idx = command.indexOf(' ');
@@ -799,6 +821,7 @@ void print_command_help() {
   Serial.println("SET LON <value>    - Manually set local longitude");
   Serial.println("SET ALT <value>    - Manually set local altitude (meters)");
   Serial.println("ZERO_ALT           - Align UAV altitude reference to tracker");
+  Serial.println("DEBUG ON|OFF       - Toggle verbose CALC/MAVLink output");
   Serial.println("=============================================\n");
 }
 
