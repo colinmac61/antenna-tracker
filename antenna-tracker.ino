@@ -113,6 +113,45 @@ double uav_alt_offset = 0.0;  // aligns UAV alt reference to tracker alt referen
 unsigned long lastServoUpdate = 0;
 const unsigned long SERVO_UPDATE_INTERVAL = 100;  // milliseconds (10 Hz)
 
+// Long-range smoothing preset (optimized for ~1km+ tracking)
+const unsigned long SMOOTH_INTERVAL_MS = 20;  // 50 Hz servo output update
+
+// Runtime-tunable (used by RANGE_MODE)
+float smooth_alpha    = 0.08;  // lower = smoother/slower
+float az_max_speed    = 18.0;  // deg/sec
+float el_max_speed    = 10.0;  // deg/sec
+float servo_deadband  = 0.6;   // deg, suppress micro-hunting
+float target_deadband = 0.4;   // deg, ignore tiny target changes
+
+// Servo target/current state
+float az_target = 90.0f, el_target = 0.0f;
+float az_current = 90.0f, el_current = 0.0f;
+float last_az_target = 90.0f, last_el_target = 0.0f;
+unsigned long lastSmoothUpdate = 0;
+
+enum RangeMode {
+  RANGE_LONG,
+  RANGE_MEDIUM,
+  RANGE_CLOSE
+};
+RangeMode range_mode = RANGE_LONG;
+
+const char* range_mode_name() {
+  switch (range_mode) {
+    case RANGE_LONG:   return "LONG";
+    case RANGE_MEDIUM: return "MEDIUM";
+    case RANGE_CLOSE:  return "CLOSE";
+    default:           return "UNKNOWN";
+  }
+}
+
+void apply_range_mode(RangeMode mode) {
+  range_mode = mode;
+  if (mode == RANGE_LONG)   { smooth_alpha = 0.08; az_max_speed = 18.0; el_max_speed = 10.0; servo_deadband = 0.6; target_deadband = 0.4; }
+  if (mode == RANGE_MEDIUM) { smooth_alpha = 0.14; az_max_speed = 35.0; el_max_speed = 22.0; servo_deadband = 0.4; target_deadband = 0.25; }
+  if (mode == RANGE_CLOSE)  { smooth_alpha = 0.24; az_max_speed = 70.0; el_max_speed = 45.0; servo_deadband = 0.25; target_deadband = 0.12; }
+}
+
 // MAVLink statistics for debugging
 struct {
   unsigned long total_packets_received;
@@ -120,6 +159,13 @@ struct {
   unsigned long failed_decodes;
   unsigned int last_message_id;
 } mavlink_stats;
+
+void handle_serial_command();
+void print_command_help();
+void park_servos();
+void smooth_servos();
+float step_toward(float current, float target, float max_speed_dps, float dt_s);
+void write_servo_angle_us(Servo& servo, float angle_deg, int min_us, int max_us);
 
 // ==================== SETUP ====================
 void setup() {
@@ -216,6 +262,11 @@ void setup() {
   mavlink_stats.last_message_id = 0;
   
   Serial.println("[SYSTEM] Initialization complete");
+  apply_range_mode(RANGE_LONG);  // default profile
+  Serial.print("[SYSTEM] Range mode: ");
+  Serial.println(range_mode_name());
+  Serial.print("[SYSTEM] Telemetry source: ");
+  Serial.println(telemetry_source_name());
   Serial.print("[SYSTEM] Telemetry source: ");
   Serial.println(telemetry_source_name());
   Serial.println("[GPS] Searching for 3D fix with 8+ satellites and HDOP ≤ 1.4...\n");
@@ -531,41 +582,79 @@ void update_servo_positions() {
     Serial.println("[SERVO] Tracking angles not valid, skipping update");
     return;
   }
-  
-  // Convert the compass bearing to a servo-friendly angle, with North at center.
-  // Bearing is 0..360° where 0° = North, 90° = East, 180° = South, 270° = West.
-  // Servo is designed with:
-  //   0° = West, 90° = North, 180° = East
+
+  // Bearing is 0..360° (0=N, 90=E, 180=S, 270=W).
+  // Servo: 0° = West, 90° = North, 180° = East
   double relative_azimuth = tracking_angles.azimuth;
   if (relative_azimuth > 180.0) {
-    relative_azimuth -= 360.0;  // Convert to -180..180 relative to North
+    relative_azimuth -= 360.0;  // -180..180 relative to North
   }
 
-  // Map relative bearing to servo angle: West=-90° -> 0°, North=0° -> 90°, East=+90° -> 180°
-  int calculated_angle = constrain((int)round(relative_azimuth + 90.0), 0, 180);
-  int azimuth_angle = 180 - calculated_angle; // Corrects for the servo orientation on the physical mount
+  // Map to servo angle, then correct for physical mount orientation
+  float calculated_angle = constrain((float)(relative_azimuth + 90.0), 0.0f, 180.0f);
+  float new_az_target = 180.0f - calculated_angle;
 
-  // Elevation follows 0..90° directly, but is scaled by gear ratio if needed.
-  int elevation_angle = constrain((int)round(tracking_angles.elevation * gearRatio), 0, 180);
+  // Elevation 0..90° scaled by gear ratio
+  float new_el_target = constrain((float)(tracking_angles.elevation * gearRatio), 0.0f, 180.0f);
 
-  // Write angles to servos using hardware PWM
-  azimuthServo.write(azimuth_angle);
-  elevationServo.write(elevation_angle);
-  
-  Serial.print("[SERVO] Azimuth: ");
-  Serial.print(azimuth_angle);
+  // Ignore very small target changes (noise gate)
+  if (fabs(new_az_target - last_az_target) >= target_deadband) {
+    az_target = new_az_target;
+    last_az_target = new_az_target;
+  }
+  if (fabs(new_el_target - last_el_target) >= target_deadband) {
+    el_target = new_el_target;
+    last_el_target = new_el_target;
+  }
+
+  Serial.print("[SERVO] Azimuth tgt: ");
+  Serial.print((int)round(az_target));
   Serial.print("° (raw: ");
   Serial.print(tracking_angles.azimuth);
-  Serial.print("°), Elevation: ");
-  Serial.print(elevation_angle);
+  Serial.print("°), Elevation tgt: ");
+  Serial.print((int)round(el_target));
   Serial.println("°");
 }
 
 void park_servos() {
-  // Move servos to neutral/safe position when no valid tracking data
-  azimuthServo.write(90);   // Center azimuth
-  elevationServo.write(0);  // Lower elevation
-  Serial.println("[SERVO] Servos parked to safe position");
+  // Set targets only; smooth_servos() does the actual movement
+  az_target = 90.0f;
+  el_target = 0.0f;
+}
+
+float step_toward(float current, float target, float max_speed_dps, float dt_s) {
+  float error = target - current;
+  if (fabs(error) < servo_deadband) return current;
+
+  float step = error * smooth_alpha;          // exponential smoothing
+  float max_step = max_speed_dps * dt_s;      // speed limiter
+  step = constrain(step, -max_step, max_step);
+
+  return current + step;
+}
+
+void write_servo_angle_us(Servo& servo, float angle_deg, int min_us, int max_us) {
+  angle_deg = constrain(angle_deg, 0.0f, 180.0f);
+  int us = min_us + (int)round((angle_deg / 180.0f) * (max_us - min_us));
+  servo.writeMicroseconds(us);
+}
+
+void smooth_servos() {
+  unsigned long now = millis();
+  if (lastSmoothUpdate == 0) {
+    lastSmoothUpdate = now;
+    return;
+  }
+  if (now - lastSmoothUpdate < SMOOTH_INTERVAL_MS) return;
+
+  float dt_s = (now - lastSmoothUpdate) / 1000.0f;
+  lastSmoothUpdate = now;
+
+  az_current = step_toward(az_current, az_target, az_max_speed, dt_s);
+  el_current = step_toward(el_current, el_target, el_max_speed, dt_s);
+
+  write_servo_angle_us(azimuthServo,   az_current, AZIMUTH_MIN_US,   AZIMUTH_MAX_US);
+  write_servo_angle_us(elevationServo, el_current, ELEVATION_MIN_US, ELEVATION_MAX_US);
 }
 
 // ==================== SERIAL COMMANDS ====================
@@ -607,6 +696,27 @@ void handle_serial_command() {
   }
   else if (command == "HELP") {
     print_command_help();
+  }
+    else if (command.startsWith("RANGE_MODE")) {
+    int idx = command.indexOf(' ');
+    if (idx < 0) {
+      Serial.println("[CMD] Usage: RANGE_MODE LONG|MEDIUM|CLOSE");
+    } else {
+      String mode = command.substring(idx + 1);
+      mode.trim();
+      if (mode == "LONG") {
+        apply_range_mode(RANGE_LONG);
+      } else if (mode == "MEDIUM") {
+        apply_range_mode(RANGE_MEDIUM);
+      } else if (mode == "CLOSE") {
+        apply_range_mode(RANGE_CLOSE);
+      } else {
+        Serial.println("[CMD] Invalid mode. Use LONG, MEDIUM, or CLOSE");
+        return;
+      }
+      Serial.print("[CMD] Range mode set to ");
+      Serial.println(range_mode_name());
+    }
   }
   else if (command == "CALIBRATE") {
     calibrate_servos();
@@ -683,11 +793,6 @@ void print_command_help() {
   Serial.println("N                  - Set direction to NORTH");
   Serial.println("S                  - Set direction to SOUTH");
   Serial.println("E                  - Set direction to EAST");
-  Serial.println("W                  - Set direction to WEST");
-  Serial.println("STATUS             - Print current system status");
-  Serial.println("HELP               - Print this help message");
-  Serial.println("CALIBRATE          - Run servo calibration");
-  Serial.println("MAVLINK_STATS      - Print MAVLink debug statistics");
   Serial.println("AZ_OFFSET <value>  - Set azimuth trim offset in degrees");
   Serial.println("EL_OFFSET <value>  - Set elevation trim offset in degrees");
   Serial.println("OFFSET_RESET       - Reset both trim offsets to zero");
