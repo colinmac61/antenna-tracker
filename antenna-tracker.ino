@@ -267,8 +267,6 @@ void setup() {
   Serial.println(range_mode_name());
   Serial.print("[SYSTEM] Telemetry source: ");
   Serial.println(telemetry_source_name());
-  Serial.print("[SYSTEM] Telemetry source: ");
-  Serial.println(telemetry_source_name());
   Serial.println("[GPS] Searching for 3D fix with 8+ satellites and HDOP ≤ 1.4...\n");
   print_command_help();
 }
@@ -793,6 +791,7 @@ void print_command_help() {
   Serial.println("N                  - Set direction to NORTH");
   Serial.println("S                  - Set direction to SOUTH");
   Serial.println("E                  - Set direction to EAST");
+  Serial.println("W                  - Set direction to WEST");
   Serial.println("AZ_OFFSET <value>  - Set azimuth trim offset in degrees");
   Serial.println("EL_OFFSET <value>  - Set elevation trim offset in degrees");
   Serial.println("OFFSET_RESET       - Reset both trim offsets to zero");
@@ -836,6 +835,7 @@ void print_system_status() {
   Serial.print("Elevation Offset: ");
   Serial.print(elevation_offset, 2);
   Serial.println(" °");
+  Serial.printf("Range Mode:        %s\n", range_mode_name());
   
   Serial.println("\n--- UAV POSITION ---");
   Serial.print("Telemetry Source: ");
