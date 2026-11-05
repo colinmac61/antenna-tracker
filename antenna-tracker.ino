@@ -117,9 +117,9 @@ const unsigned long SERVO_UPDATE_INTERVAL = 100;  // milliseconds (10 Hz)
 const unsigned long SMOOTH_INTERVAL_MS = 20;  // 50 Hz servo output update
 
 // Runtime-tunable (used by RANGE_MODE)
-float smooth_alpha    = 0.08;  // lower = smoother/slower
+float smooth_alpha    = 0.10;  // lower = smoother/slower
 float az_max_speed    = 18.0;  // deg/sec
-float el_max_speed    = 10.0;  // deg/sec
+float el_max_speed    = 14.0;  // deg/sec
 float servo_deadband  = 0.6;   // deg, suppress micro-hunting
 float target_deadband = 0.4;   // deg, ignore tiny target changes
 
@@ -152,7 +152,7 @@ const char* range_mode_name() {
 
 void apply_range_mode(RangeMode mode) {
   range_mode = mode;
-  if (mode == RANGE_LONG)   { smooth_alpha = 0.08; az_max_speed = 18.0; el_max_speed = 10.0; servo_deadband = 0.6; target_deadband = 0.4; }
+  if (mode == RANGE_LONG)   { smooth_alpha = 0.10; az_max_speed = 18.0; el_max_speed = 14.0; servo_deadband = 0.6; target_deadband = 0.4; }
   if (mode == RANGE_MEDIUM) { smooth_alpha = 0.14; az_max_speed = 35.0; el_max_speed = 22.0; servo_deadband = 0.4; target_deadband = 0.25; }
   if (mode == RANGE_CLOSE)  { smooth_alpha = 0.24; az_max_speed = 70.0; el_max_speed = 45.0; servo_deadband = 0.25; target_deadband = 0.12; }
 }
