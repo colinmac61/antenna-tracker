@@ -118,7 +118,7 @@ const unsigned long SERVO_UPDATE_INTERVAL = 100;  // milliseconds (10 Hz)
 // Long-range smoothing preset (optimized for ~1km+ tracking)
 const unsigned long SMOOTH_INTERVAL_MS = 20;  // 50 Hz servo output update
 
-// Runtime-tunable (used by RANGE_MODE)
+// Runtime-tunable range-mode profile values
 float smooth_alpha    = 0.10;  // lower = smoother/slower
 float az_max_speed    = 18.0;  // deg/sec
 float el_max_speed    = 14.0;  // deg/sec
@@ -136,15 +136,27 @@ bool debug_verbose = false;
 unsigned long lastStatusPrint = 0;
 const unsigned long STATUS_PRINT_INTERVAL = 1000;  // ms, compact status line
 
+const double PARK_MAX_DISTANCE_M = 10.0;
+const double PARK_EXIT_DISTANCE_M = 15.0;
+const double CLOSE_MAX_DISTANCE_M = 250.0;
+const double CLOSE_TO_MEDIUM_DISTANCE_M = 255.0;
+const double MEDIUM_TO_CLOSE_DISTANCE_M = 245.0;
+const double MEDIUM_MAX_DISTANCE_M = 1000.0;
+const double MEDIUM_TO_LONG_DISTANCE_M = 1005.0;
+const double LONG_TO_MEDIUM_DISTANCE_M = 995.0;
+
 enum RangeMode {
+  RANGE_PARK,
   RANGE_LONG,
   RANGE_MEDIUM,
   RANGE_CLOSE
 };
 RangeMode range_mode = RANGE_LONG;
+bool range_mode_initialized = false;
 
 const char* range_mode_name() {
   switch (range_mode) {
+    case RANGE_PARK:   return "PARK";
     case RANGE_LONG:   return "LONG";
     case RANGE_MEDIUM: return "MEDIUM";
     case RANGE_CLOSE:  return "CLOSE";
@@ -154,6 +166,7 @@ const char* range_mode_name() {
 
 void apply_range_mode(RangeMode mode) {
   range_mode = mode;
+  if (mode == RANGE_PARK)   { smooth_alpha = 0.14; az_max_speed = 35.0; el_max_speed = 22.0; servo_deadband = 0.4; target_deadband = 0.25; }
   if (mode == RANGE_LONG)   { smooth_alpha = 0.10; az_max_speed = 18.0; el_max_speed = 14.0; servo_deadband = 0.6; target_deadband = 0.4; }
   if (mode == RANGE_MEDIUM) { smooth_alpha = 0.14; az_max_speed = 35.0; el_max_speed = 22.0; servo_deadband = 0.4; target_deadband = 0.25; }
   if (mode == RANGE_CLOSE)  { smooth_alpha = 0.24; az_max_speed = 70.0; el_max_speed = 45.0; servo_deadband = 0.25; target_deadband = 0.12; }
@@ -175,6 +188,8 @@ float step_toward(float current, float target, float max_speed_dps, float dt_s);
 void write_servo_angle_us(Servo& servo, float angle_deg, int min_us, int max_us);
 double horizontal_distance_to_uav_m();
 void auto_zero_altitude_if_ready();
+bool update_range_mode(double distance_m);
+void print_range_status(double distance_m, bool mode_changed);
 
 // ==================== SETUP ====================
 void setup() {
@@ -272,8 +287,7 @@ void setup() {
   
   Serial.println("[SYSTEM] Initialization complete");
   apply_range_mode(RANGE_LONG);  // default profile
-  Serial.print("[SYSTEM] Range mode: ");
-  Serial.println(range_mode_name());
+  Serial.println("[SYSTEM] Range mode will be selected automatically from UAV distance");
   Serial.print("[SYSTEM] Telemetry source: ");
   Serial.println(telemetry_source_name());
   Serial.println("[GPS] Searching for 3D fix with 8+ satellites and HDOP ≤ 1.4...\n");
@@ -301,8 +315,15 @@ void loop() {
 
     // Calculate tracking angles if we have valid data
     if (local_position.fix && is_mavlink_data_fresh()) {
-      calculate_tracking_angles();
-      update_servo_positions();
+      double distance = horizontal_distance_to_uav_m();
+      bool mode_changed = update_range_mode(distance);
+      if (range_mode == RANGE_PARK) {
+        park_servos();
+      } else {
+        calculate_tracking_angles();
+        update_servo_positions();
+      }
+      print_range_status(distance, mode_changed);
     } else {
       if (!local_position.fix) {
         Serial.println("[WARNING] Waiting for GPS fix...");
@@ -409,6 +430,73 @@ void auto_zero_altitude_if_ready() {
   Serial.print("[ALT] Auto-zero set; UAV altitude offset: ");
   Serial.print(uav_alt_offset, 2);
   Serial.println(" m");
+}
+
+bool update_range_mode(double distance_m) {
+  RangeMode next_mode = range_mode;
+  if (!range_mode_initialized) {
+    if (distance_m <= PARK_MAX_DISTANCE_M) {
+      next_mode = RANGE_PARK;
+    } else if (distance_m <= CLOSE_MAX_DISTANCE_M) {
+      next_mode = RANGE_CLOSE;
+    } else if (distance_m <= MEDIUM_MAX_DISTANCE_M) {
+      next_mode = RANGE_MEDIUM;
+    } else {
+      next_mode = RANGE_LONG;
+    }
+    range_mode_initialized = true;
+  } else {
+    switch (range_mode) {
+      case RANGE_PARK:
+        if (distance_m >= PARK_EXIT_DISTANCE_M) {
+          next_mode = distance_m <= CLOSE_MAX_DISTANCE_M ? RANGE_CLOSE :
+                      distance_m <= MEDIUM_MAX_DISTANCE_M ? RANGE_MEDIUM : RANGE_LONG;
+        }
+        break;
+      case RANGE_CLOSE:
+        if (distance_m <= PARK_MAX_DISTANCE_M) {
+          next_mode = RANGE_PARK;
+        } else if (distance_m >= CLOSE_TO_MEDIUM_DISTANCE_M) {
+          next_mode = distance_m <= MEDIUM_MAX_DISTANCE_M ? RANGE_MEDIUM : RANGE_LONG;
+        }
+        break;
+      case RANGE_MEDIUM:
+        if (distance_m <= PARK_MAX_DISTANCE_M) {
+          next_mode = RANGE_PARK;
+        } else if (distance_m <= MEDIUM_TO_CLOSE_DISTANCE_M) {
+          next_mode = RANGE_CLOSE;
+        } else if (distance_m >= MEDIUM_TO_LONG_DISTANCE_M) {
+          next_mode = RANGE_LONG;
+        }
+        break;
+      case RANGE_LONG:
+        if (distance_m <= PARK_MAX_DISTANCE_M) {
+          next_mode = RANGE_PARK;
+        } else if (distance_m <= MEDIUM_TO_CLOSE_DISTANCE_M) {
+          next_mode = RANGE_CLOSE;
+        } else if (distance_m <= LONG_TO_MEDIUM_DISTANCE_M) {
+          next_mode = RANGE_MEDIUM;
+        }
+        break;
+    }
+  }
+
+  if (next_mode == range_mode) {
+    return false;
+  }
+
+  apply_range_mode(next_mode);
+  return true;
+}
+
+void print_range_status(double distance_m, bool mode_changed) {
+  unsigned long now = millis();
+  if (mode_changed || now - lastStatusPrint >= STATUS_PRINT_INTERVAL) {
+    lastStatusPrint = now;
+    Serial.printf("[TRK] mode: %s  distance: %.1f m  az tgt/cur: %.1f/%.1f  el tgt/cur: %.1f/%.1f  alt(uav): %.1f m\n",
+                  range_mode_name(), distance_m, az_target, az_current,
+                  el_target, el_current, uav_position.altitude);
+  }
 }
 
 // ==================== MAVLINK FUNCTIONS ====================
@@ -660,20 +748,14 @@ void update_servo_positions() {
     el_target = new_el_target;
     last_el_target = new_el_target;
   }
-
-  unsigned long now = millis();
-  if (debug_verbose || now - lastStatusPrint >= STATUS_PRINT_INTERVAL) {
-    lastStatusPrint = now;
-    Serial.printf("[TRK] az tgt/cur: %.1f/%.1f  el tgt/cur: %.1f/%.1f  alt(uav): %.1f m  mode: %s\n",
-                  az_target, az_current, el_target, el_current,
-                  uav_position.altitude, range_mode_name());
-  }
 }
 
 void park_servos() {
   // Set targets only; smooth_servos() does the actual movement
   az_target = 90.0f;
   el_target = 0.0f;
+  last_az_target = az_target;
+  last_el_target = el_target;
 }
 
 float step_toward(float current, float target, float max_speed_dps, float dt_s) {
@@ -766,26 +848,8 @@ void handle_serial_command() {
     debug_verbose = false;
     Serial.println("[CMD] Verbose debug OFF");
   }
-    else if (command.startsWith("RANGE_MODE")) {
-    int idx = command.indexOf(' ');
-    if (idx < 0) {
-      Serial.println("[CMD] Usage: RANGE_MODE LONG|MEDIUM|CLOSE");
-    } else {
-      String mode = command.substring(idx + 1);
-      mode.trim();
-      if (mode == "LONG") {
-        apply_range_mode(RANGE_LONG);
-      } else if (mode == "MEDIUM") {
-        apply_range_mode(RANGE_MEDIUM);
-      } else if (mode == "CLOSE") {
-        apply_range_mode(RANGE_CLOSE);
-      } else {
-        Serial.println("[CMD] Invalid mode. Use LONG, MEDIUM, or CLOSE");
-        return;
-      }
-      Serial.print("[CMD] Range mode set to ");
-      Serial.println(range_mode_name());
-    }
+  else if (command.startsWith("RANGE_MODE")) {
+    Serial.println("[CMD] Range mode is selected automatically from UAV distance");
   }
   else if (command == "CALIBRATE") {
     calibrate_servos();
