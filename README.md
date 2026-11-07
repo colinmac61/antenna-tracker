@@ -6,6 +6,7 @@ A GPS-guided antenna tracker for ESP32 that automatically points a directional a
 
 - **Manual Direction Setup**: Point antenna North, South, East, or West
 - **Local GPS Positioning**: Uses local GPS module for tracker location (Lat/Lon/Alt)
+- **Automatic Altitude Alignment**: Aligns UAV and tracker altitude references once after tracker GPS lock, when fresh UAV telemetry places them within 20 m
 - **MAVLink 2 Telemetry**: Receives UAV position via ELRS Backpack WIFI
 - **Dual-Axis Servo Control**: Independent azimuth (horizontal) and elevation (vertical) positioning
 - **Real-time Angle Calculation**: Computes azimuth and elevation to target UAV
@@ -176,6 +177,7 @@ Displays complete system status including positions and angles.
 | `STATUS` | Print system status |
 | `HELP` | List all commands |
 | `CALIBRATE` | Run servo calibration |
+| `ZERO_ALT` | Manually align altitude references (requires GPS lock, fresh UAV telemetry, and positions within 20 m; normally automatic) |
 | `SET LAT <value>` | Override local latitude |
 | `SET LON <value>` | Override local longitude |
 | `SET ALT <value>` | Override local altitude (meters) |

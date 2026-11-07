@@ -108,6 +108,8 @@ struct {
 double azimuth_offset = 0.0;
 double elevation_offset = 0.0;
 double uav_alt_offset = 0.0;  // aligns UAV alt reference to tracker alt reference
+bool uav_alt_auto_zero_attempted = false;
+const double AUTO_ALT_ZERO_MAX_DISTANCE_M = 20.0;
 
 // Timing control
 unsigned long lastServoUpdate = 0;
@@ -171,6 +173,8 @@ void park_servos();
 void smooth_servos();
 float step_toward(float current, float target, float max_speed_dps, float dt_s);
 void write_servo_angle_us(Servo& servo, float angle_deg, int min_us, int max_us);
+double horizontal_distance_to_uav_m();
+void auto_zero_altitude_if_ready();
 
 // ==================== SETUP ====================
 void setup() {
@@ -288,6 +292,7 @@ void loop() {
 
   // Receive MAVLink telemetry
   receive_mavlink_data();
+  auto_zero_altitude_if_ready();
   smooth_servos();   // runs every pass, outside the 100 ms block
 
   // Update servo positions at regular intervals (non-blocking)
@@ -369,6 +374,41 @@ void update_local_gps() {
     Serial.print("[GPS] Satellites: ");
     Serial.println(gps.satellites.value());
   }
+}
+
+double horizontal_distance_to_uav_m() {
+  double delta_lat = radians(uav_position.latitude - local_position.latitude);
+  double delta_lon = radians(uav_position.longitude - local_position.longitude);
+  double a = sin(delta_lat / 2) * sin(delta_lat / 2) +
+             cos(radians(local_position.latitude)) * cos(radians(uav_position.latitude)) *
+             sin(delta_lon / 2) * sin(delta_lon / 2);
+  double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  return 6371000.0 * c;
+}
+
+void auto_zero_altitude_if_ready() {
+  if (uav_alt_auto_zero_attempted || !gps_state.locked ||
+      !local_position.fix || !uav_position.position_valid) {
+    return;
+  }
+
+  if (millis() - uav_position.last_update > MAVLINK_TIMEOUT_MS) {
+    return;
+  }
+
+  uav_alt_auto_zero_attempted = true;
+  double distance = horizontal_distance_to_uav_m();
+  if (distance > AUTO_ALT_ZERO_MAX_DISTANCE_M) {
+    Serial.print("[ALT] Auto-zero skipped; UAV is ");
+    Serial.print(distance, 1);
+    Serial.println(" m from tracker (limit: 20 m)");
+    return;
+  }
+
+  uav_alt_offset = uav_position.altitude - local_position.altitude;
+  Serial.print("[ALT] Auto-zero set; UAV altitude offset: ");
+  Serial.print(uav_alt_offset, 2);
+  Serial.println(" m");
 }
 
 // ==================== MAVLINK FUNCTIONS ====================
@@ -700,13 +740,20 @@ void handle_serial_command() {
     print_system_status();
   }
   else if (command == "ZERO_ALT") {
-    uav_alt_offset = uav_position.altitude -  local_position.altitude;
-    Serial.print("[CMD] UAV altitude offset set to: ");
-    Serial.print(uav_alt_offset, 2);
-    Serial.println(" m");
-    Serial.print("[CMD] Corrected UAV altitude now: ");
-    Serial.print(uav_position.altitude - uav_alt_offset, 2);
-    Serial.println(" m");
+    if (!gps_state.locked || !local_position.fix || !is_mavlink_data_fresh()) {
+      Serial.println("[CMD] ZERO_ALT requires tracker GPS lock and fresh UAV telemetry");
+    } else if (horizontal_distance_to_uav_m() > AUTO_ALT_ZERO_MAX_DISTANCE_M) {
+      Serial.println("[CMD] ZERO_ALT requires UAV to be within 20 m of tracker");
+    } else {
+      uav_alt_offset = uav_position.altitude - local_position.altitude;
+      uav_alt_auto_zero_attempted = true;
+      Serial.print("[CMD] UAV altitude offset set to: ");
+      Serial.print(uav_alt_offset, 2);
+      Serial.println(" m");
+      Serial.print("[CMD] Corrected UAV altitude now: ");
+      Serial.print(uav_position.altitude - uav_alt_offset, 2);
+      Serial.println(" m");
+    }
   }
   else if (command == "HELP") {
     print_command_help();
