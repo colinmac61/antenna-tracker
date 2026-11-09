@@ -182,8 +182,12 @@ Displays complete system status including positions and angles.
 | `SET LAT <value>` | Override local latitude |
 | `SET LON <value>` | Override local longitude |
 | `SET ALT <value>` | Override local altitude (meters) |
+| `EL_OFFSET <delta>` | Add an elevation trim in degrees; negative values subtract |
+| `OFFSET_RESET` | Reset azimuth and elevation trim offsets to zero |
 
 Range mode is selected automatically from horizontal UAV distance: PARK at 10 m or less, CLOSE through 250 m, MEDIUM through 1,000 m, and LONG beyond 1,000 m. A 5 m hysteresis prevents mode switching from GPS jitter; the selected mode and distance are included in the periodic `[TRK]` serial status line. PARK smoothly targets azimuth 90° and elevation 0°. Beyond 25 km, the tracker continues using LONG and reports the measured distance.
+
+`EL_OFFSET` applies each entered value to the current elevation trim, so adjustments accumulate. For example, `EL_OFFSET 1` adds 1°, and `EL_OFFSET -0.5` subtracts 0.5°. `OFFSET_RESET` still clears both azimuth and elevation trims.
 
 ## Troubleshooting
 
