@@ -13,7 +13,6 @@
 #include <math.h>
 #include <MAVLink.h>
 #include <ESP32Servo.h>
-#include <stdlib.h>
 
 // ==================== CONFIGURATION ====================
 // WiFi Configuration for ELRS Backpack and Mission Planner forwarding
@@ -953,25 +952,13 @@ void handle_serial_command() {
   else if (command.startsWith("EL_OFFSET")) {
     int index = command.indexOf(' ');
     if (index >= 0) {
-      String value_text = command.substring(index + 1);
-      value_text.trim();
-      const char* value_start = value_text.c_str();
-      char* value_end;
-      double increment = strtod(value_start, &value_end);
-
-      if (value_end == value_start || *value_end != '\0' || !isfinite(increment)) {
-        Serial.println("[CMD] Invalid increment. Use EL_OFFSET <increment in degrees>");
-        return;
-      }
-
-      elevation_offset += increment;
-      Serial.print("[CMD] Elevation offset changed by: ");
-      Serial.print(increment, 2);
-      Serial.print("°; current offset: ");
+      float value = command.substring(index + 1).toFloat();
+      elevation_offset = value;
+      Serial.print("[CMD] Elevation offset set to: ");
       Serial.print(elevation_offset, 2);
       Serial.println("°");
     } else {
-      Serial.println("[CMD] Usage: EL_OFFSET <increment in degrees>");
+      Serial.println("[CMD] Usage: EL_OFFSET <value>");
     }
   }
   else if (command.startsWith("SET LAT")) {
@@ -1016,7 +1003,7 @@ void print_command_help() {
   Serial.println("E                  - Set direction to EAST");
   Serial.println("W                  - Set direction to WEST");
   Serial.println("AZ_OFFSET <value>  - Set azimuth trim offset in degrees");
-  Serial.println("EL_OFFSET <delta>  - Add elevation trim in degrees (negative values subtract)");
+  Serial.println("EL_OFFSET <value>  - Set elevation trim offset in degrees");
   Serial.println("OFFSET_RESET       - Reset both trim offsets to zero");
   Serial.println("SET LAT <value>    - Manually set local latitude");
   Serial.println("SET LON <value>    - Manually set local longitude");
