@@ -590,13 +590,18 @@ void receive_mavlink_data() {
   if (telemetry_source == TELEM_WIFI || telemetry_source == TELEM_GCS) {
     int packet_len = udp.parsePacket();
     if (packet_len > 0) {
-      if (telemetry_source == TELEM_GCS && mavlink_stats.total_packets_received == 0) {
-        Serial.print("[GCS] First UDP packet: ");
-        Serial.print(packet_len);
-        Serial.print(" bytes from ");
-        Serial.print(udp.remoteIP());
-        Serial.print(":");
-        Serial.println(udp.remotePort());
+      if (telemetry_source == TELEM_GCS) {
+        static unsigned long last_gcs_packet_log = 0;
+        unsigned long now = millis();
+        if (mavlink_stats.total_packets_received == 0 || now - last_gcs_packet_log >= 5000) {
+          Serial.print("[GCS] UDP packet: ");
+          Serial.print(packet_len);
+          Serial.print(" bytes from ");
+          Serial.print(udp.remoteIP());
+          Serial.print(":");
+          Serial.println(udp.remotePort());
+          last_gcs_packet_log = now;
+        }
       }
       uint8_t buf[MAVLINK_MAX_PACKET_LEN];
       int decoded = 0;
