@@ -16,16 +16,16 @@
 #include <stdlib.h>
 
 // ==================== CONFIGURATION ====================
-// WiFi Configuration for ELRS Backpack
+// WiFi Configuration for ELRS Backpack and Mission Planner forwarding
 const char* ssid = "ExpressLRS TX Backpack ABFA86";        // Change to your ELRS backpack SSID
 const char* password = "expresslrs";          // Change to your ELRS backpack password
-const int udp_port = 14550;                      // MAVLink UDP port
-
-// Define your Static IP configuration
-//IPAddress local_IP(10, 0, 0, 3); 
-//IPAddress gateway(10, 0, 0, 1);
-//IPAddress subnet(255, 255, 255, 0);
-//IPAddress primaryDNS(8, 8, 8, 8);   
+const int udp_port = 14550;                  // Direct backpack MAVLink UDP port
+const int gcs_udp_port = 14552;              // Mission Planner UDP mirror port
+IPAddress gcs_local_ip(10, 0, 0, 50);         // Mission Planner mirror destination
+IPAddress gcs_gateway(10, 0, 0, 1);
+IPAddress gcs_subnet(255, 255, 255, 0);
+IPAddress gcs_primary_dns(10, 0, 0, 1);
+IPAddress gcs_secondary_dns(8, 8, 8, 8);
 
 // GPIO Pins for Servos
 const int AZIMUTH_SERVO_PIN = 13;   // Servo for horizontal rotation (East/West)
@@ -63,6 +63,7 @@ HardwareSerial SerialBackpack(0);  // UART0 -> wired ELRS backpack
 enum TelemetrySource {
   TELEM_NONE,
   TELEM_WIFI,
+  TELEM_GCS,
   TELEM_BACKPACK
 };
 TelemetrySource telemetry_source = TELEM_NONE;
@@ -199,7 +200,27 @@ void setup() {
   
   Serial.println("\n\n=== ANTENNA TRACKER STARTUP ===");
   Serial.println("Initializing systems...");
-  
+
+  bool use_gcs = false;
+  while (true) {
+    Serial.println("[STARTUP] Enter GCS for Mission Planner or BACKPACK for direct telemetry:");
+    unsigned long prompt_time = millis();
+    while (!Serial.available() && millis() - prompt_time < 10000) {
+      delay(10);
+    }
+    if (!Serial.available()) continue;
+
+    String selection = Serial.readStringUntil('\n');
+    selection.trim();
+    selection.toUpperCase();
+    if (selection == "GCS") {
+      use_gcs = true;
+      break;
+    }
+    if (selection == "BACKPACK") break;
+    Serial.println("[STARTUP] Invalid selection; enter GCS or BACKPACK.");
+  }
+
   // Initialize GPS Serial
   SerialGPS.begin(115200, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   Serial.println("[GPS] Serial initialized at 115200 baud");
@@ -210,40 +231,62 @@ void setup() {
   Serial.println("[SERVO] Servo pins initialized with hardware PWM");
   
   // Initialize WiFi
-  // if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
-  //  Serial.println("STA Failed to configure Static IP");
-  // }
   WiFi.mode(WIFI_STA);
-  Serial.print("[WiFi] Connecting to SSID: ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
+  bool wifi_configured = true;
+  if (use_gcs) {
+    if (!WiFi.config(gcs_local_ip, gcs_gateway, gcs_subnet, gcs_primary_dns, gcs_secondary_dns)) {
+      Serial.println("[WiFi] Static IP configuration failed; restart after correcting the settings.");
+      while (true) delay(1000);
+    }
+  } else {
+    IPAddress dhcp_ip(0, 0, 0, 0);
+    if (!WiFi.config(dhcp_ip, dhcp_ip, dhcp_ip)) {
+      Serial.println("[WiFi] Failed to enable DHCP; falling back to wired backpack.");
+      wifi_configured = false;
+    }
+  }
+  if (wifi_configured) {
+    Serial.print("[WiFi] Connecting to SSID: ");
+    Serial.println(ssid);
+    WiFi.begin(ssid, password);
+  }
   
   int wifi_attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && wifi_attempts < 20) {
+  while (wifi_configured && WiFi.status() != WL_CONNECTED && wifi_attempts < 20) {
     delay(500);
     Serial.print(".");
     wifi_attempts++;
   }
+
+  while (use_gcs && WiFi.status() != WL_CONNECTED) {
+    Serial.println("\n[WiFi] Waiting for connection for Mission Planner; no source switch.");
+    delay(10000);
+  }
   
-  if (WiFi.status() == WL_CONNECTED) {
+  if (wifi_configured && WiFi.status() == WL_CONNECTED) {
     Serial.println("\n[WiFi] ✓ Connected successfully");
     Serial.print("[WiFi] IP Address: ");
     Serial.println(WiFi.localIP());
 
     // Start UDP
-    if (udp.begin(udp_port)) {
+    int selected_port = use_gcs ? gcs_udp_port : udp_port;
+    if (udp.begin(selected_port)) {
       Serial.print("[UDP] ✓ Listening on port ");
-      Serial.println(udp_port);
-      telemetry_source = TELEM_WIFI;
+      Serial.println(selected_port);
+      telemetry_source = use_gcs ? TELEM_GCS : TELEM_WIFI;
     } else {
       Serial.println("[UDP] ✗ Failed to initialize UDP");
+      if (use_gcs) {
+        Serial.println("[GCS] Restart to retry; no source switch.");
+        while (true) delay(1000);
+      }
     }
   } else {
     Serial.println("\n[WiFi] ✗ Failed to connect");
   }
 
   // WiFi/UDP unavailable -> try ESPNOW connection, used for CRSF telemetry
-  if (telemetry_source != TELEM_WIFI) {
+  if (telemetry_source == TELEM_NONE) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     SerialBackpack.begin(BACKPACK_BAUD, SERIAL_8N1, RXD2, TXD2);
@@ -504,6 +547,7 @@ void print_range_status(double distance_m, bool mode_changed) {
 const char* telemetry_source_name() {
   switch (telemetry_source) {
     case TELEM_WIFI:     return "WiFi (UDP)";
+    case TELEM_GCS:      return "Mission Planner (UDP)";
     case TELEM_BACKPACK: return "Wired Backpack (UART)";
     default:             return "None";
   }
@@ -536,15 +580,26 @@ int parse_mavlink_bytes(const uint8_t* buf, int len, uint8_t channel) {
 }
 
 void receive_mavlink_data() {
-  if (telemetry_source == TELEM_WIFI) {
+  if (telemetry_source == TELEM_WIFI || telemetry_source == TELEM_GCS) {
     int packet_len = udp.parsePacket();
     if (packet_len) {
       uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-      int len = udp.read(buf, MAVLINK_MAX_PACKET_LEN);
+      int decoded = 0;
+      int remaining = packet_len;
+
+      while (remaining > 0) {
+        int len = udp.read(buf, remaining < MAVLINK_MAX_PACKET_LEN ? remaining : MAVLINK_MAX_PACKET_LEN);
+        if (len <= 0) {
+          Serial.println("[UDP] Failed to read complete packet");
+          break;
+        }
+        decoded += parse_mavlink_bytes(buf, len, MAVLINK_COMM_0);
+        remaining -= len;
+      }
 
       mavlink_stats.total_packets_received++;
 
-      if (parse_mavlink_bytes(buf, len, MAVLINK_COMM_0) == 0) {
+      if (decoded == 0) {
         mavlink_stats.failed_decodes++;
       }
     }
@@ -1030,6 +1085,8 @@ void print_system_status() {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.print("IP Address:  ");
       Serial.println(WiFi.localIP());
+      Serial.print("UDP port:    ");
+      Serial.println(telemetry_source == TELEM_GCS ? gcs_udp_port : udp_port);
       Serial.print("Signal:      ");
       Serial.print(WiFi.RSSI());
       Serial.println(" dBm");

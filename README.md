@@ -1,6 +1,6 @@
 # Antenna Tracker with MAVLink 2 Support
 
-A GPS-guided antenna tracker for ESP32 that automatically points a directional antenna at a UAV using MAVLink 2 telemetry via ELRS Backpack WiFi.
+A GPS-guided antenna tracker for ESP32 that automatically points a directional antenna at a UAV using MAVLink telemetry from an ELRS backpack or Mission Planner UDP forwarding.
 
 ## Features
 
@@ -8,10 +8,10 @@ A GPS-guided antenna tracker for ESP32 that automatically points a directional a
 - **Local GPS Positioning**: Uses local GPS module for tracker location (Lat/Lon/Alt)
 - **Automatic Altitude Alignment**: Aligns UAV and tracker altitude references once after tracker GPS lock, when fresh UAV telemetry places them within 20 m
 - **Automatic Range Modes**: Selects PARK, CLOSE, MEDIUM, or LONG from UAV distance, with servo parking within 10 m
-- **MAVLink 2 Telemetry**: Receives UAV position via ELRS Backpack WIFI
+- **MAVLink 2 Telemetry**: Receives UAV position directly from the ELRS backpack or through Mission Planner's UDP mirror
 - **Dual-Axis Servo Control**: Independent azimuth (horizontal) and elevation (vertical) positioning
 - **Real-time Angle Calculation**: Computes azimuth and elevation to target UAV
-- **Serial Command Interface**: Control and monitor via Serial (115200 baud)
+- **Serial Command Interface**: Control and monitor via Bluetooth serial (57600 baud)
 - **Comprehensive Debug Output**: Serial print statements for troubleshooting
 
 ## Hardware Requirements
@@ -93,16 +93,18 @@ Bluetooth
 Edit the main sketch:
 
 ```cpp
-// WiFi - connect to Backpack or CGS MAVLINK forwarding
+// WiFi - connect to the ELRS backpack
 const char* ssid = "YOUR_ELRS_SSID";
 const char* password = "YOUR_PASSWORD";
-const int udp_port = 14550;
+const int udp_port = 14550;       // Direct backpack telemetry
+const int gcs_udp_port = 14552;   // Mission Planner mirror
 
-// Define your Static IP configuration
-IPAddress local_IP(10, 0, 0, 5); 
-IPAddress gateway(10, 0, 0, 1);
-IPAddress subnet(255, 255, 255, 0);
-IPAddress primaryDNS(8, 8, 8, 8);   
+// Static IP used only for Mission Planner forwarding
+IPAddress gcs_local_ip(10, 0, 0, 50);
+IPAddress gcs_gateway(10, 0, 0, 1);
+IPAddress gcs_subnet(255, 255, 255, 0);
+IPAddress gcs_primary_dns(10, 0, 0, 1);
+IPAddress gcs_secondary_dns(8, 8, 8, 8);
 
 // GPIO Pins
 const int AZIMUTH_SERVO_PIN = 18;
@@ -122,24 +124,32 @@ const int ELEVATION_MAX_US = 2000; // 90° Vertical
 2. **Tools** → **Board** → **ESP32 Dev Module**
 3. **Tools** → **Port** → Select COM port
 4. **Sketch** → **Upload**
-5. **Tools** → **Serial Monitor** (115200 baud)
+5. Connect to the HC-05 serial interface at 57600 baud
 
 ## Quick Start
 
-### Step 1: Verify GPS
+### Step 1: Select the telemetry source
+
+At startup, send `BACKPACK` for direct backpack telemetry or `GCS` for Mission Planner forwarding over the Bluetooth serial terminal. The tracker waits for a valid selection; restart it to change sources.
+
+For `GCS`, connect Mission Planner and the tracker to the backpack Wi-Fi, and set Mission Planner's UDP mirror destination to the tracker IP and port above (default `10.0.0.50:14552`). Ensure the static IP is on the backpack's subnet and does not conflict with another device. The tracker waits for Wi-Fi and does not switch sources if Mission Planner telemetry is absent or stops; stale telemetry causes the tracker to park.
+
+For `BACKPACK`, the tracker uses DHCP and listens on port `14550`. If Wi-Fi connection or UDP initialization fails at startup, it falls back to the wired backpack UART as before.
+
+### Step 2: Verify GPS
 ```
 Look for: [GPS] ✓ Position Updated
          [GPS] Satellites: 8+
 ```
 
-### Step 2: Connect to ELRS
+### Step 3: Check the connection
 ```
 Look for: [WiFi] ✓ Connected successfully
-         [WiFi] IP Address: 192.168.x.x
-         [UDP] ✓ Listening on port 14550
+         [WiFi] IP Address: 10.0.0.50 (GCS, with default settings)
+         [UDP] ✓ Listening on port 14550 (BACKPACK) or 14552 (GCS)
 ```
 
-### Step 3: Set Antenna Direction
+### Step 4: Set Antenna Direction
 Send via Serial Monitor:
 ```
 N    // Point North
@@ -148,7 +158,7 @@ S    // Point South
 W    // Point West
 ```
 
-### Step 4: Calibrate Servos
+### Step 5: Calibrate Servos
 ```
 CALIBRATE
 ```
@@ -156,7 +166,7 @@ Observes servo movements. Adjust pulse widths if needed:
 - Min/max should match your servo's physical limits
 - Typical range: 1000-2000 microseconds
 
-### Step 5: Start UAV
+### Step 6: Start UAV
 - Power on flight controller
 - Look for: `[MAVLink] ✓ UAV Position Updated`
 - Servos should begin tracking
@@ -209,7 +219,7 @@ Range mode is selected automatically from horizontal UAV distance: PARK at 10 m 
 - **Test**: Send `CALIBRATE` command
 
 ### MAVLink Issues
-- **No telemetry**: Verify UDP port 14550 correct
+- **No telemetry**: Verify the selected source and UDP port (14550 for BACKPACK, 14552 for GCS); for GCS, check the mirror destination IP too
 - **Data old**: Check flight controller MAVLink output enabled
 - **Message errors**: Confirm MAVLink 2 protocol selected
 
