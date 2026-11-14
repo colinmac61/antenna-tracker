@@ -21,7 +21,7 @@ const char* ssid = "ExpressLRS TX Backpack ABFA86";        // Change to your ELR
 const char* password = "expresslrs";          // Change to your ELRS backpack password
 const int udp_port = 14550;                  // Direct backpack MAVLink UDP port
 const int gcs_udp_port = 14552;              // Mission Planner UDP mirror port
-IPAddress gcs_local_ip(10, 0, 0, 50);         // Mission Planner mirror destination
+IPAddress gcs_local_ip(10, 0, 0, 50);         // Tracker's local static IP
 IPAddress gcs_gateway(10, 0, 0, 1);
 IPAddress gcs_subnet(255, 255, 255, 0);
 IPAddress gcs_primary_dns(10, 0, 0, 1);
@@ -267,6 +267,12 @@ void setup() {
     Serial.println("\n[WiFi] ✓ Connected successfully");
     Serial.print("[WiFi] IP Address: ");
     Serial.println(WiFi.localIP());
+    if (use_gcs) {
+      Serial.print("[WiFi] Subnet Mask: ");
+      Serial.println(WiFi.subnetMask());
+      Serial.print("[WiFi] Gateway IP: ");
+      Serial.println(WiFi.gatewayIP());
+    }
 
     // Start UDP
     int selected_port = use_gcs ? gcs_udp_port : udp_port;
@@ -274,6 +280,7 @@ void setup() {
       Serial.print("[UDP] ✓ Listening on port ");
       Serial.println(selected_port);
       telemetry_source = use_gcs ? TELEM_GCS : TELEM_WIFI;
+      if (use_gcs) Serial.println("[GCS] Waiting for forwarded UDP packets...");
     } else {
       Serial.println("[UDP] ✗ Failed to initialize UDP");
       if (use_gcs) {
@@ -582,7 +589,15 @@ int parse_mavlink_bytes(const uint8_t* buf, int len, uint8_t channel) {
 void receive_mavlink_data() {
   if (telemetry_source == TELEM_WIFI || telemetry_source == TELEM_GCS) {
     int packet_len = udp.parsePacket();
-    if (packet_len) {
+    if (packet_len > 0) {
+      if (telemetry_source == TELEM_GCS && mavlink_stats.total_packets_received == 0) {
+        Serial.print("[GCS] First UDP packet: ");
+        Serial.print(packet_len);
+        Serial.print(" bytes from ");
+        Serial.print(udp.remoteIP());
+        Serial.print(":");
+        Serial.println(udp.remotePort());
+      }
       uint8_t buf[MAVLINK_MAX_PACKET_LEN];
       int decoded = 0;
       int remaining = packet_len;

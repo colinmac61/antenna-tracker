@@ -132,7 +132,9 @@ const int ELEVATION_MAX_US = 2000; // 90° Vertical
 
 At startup, send `BACKPACK` for direct backpack telemetry or `GCS` for Mission Planner forwarding over the Bluetooth serial terminal. The tracker waits for a valid selection; restart it to change sources.
 
-For `GCS`, connect Mission Planner and the tracker to the backpack Wi-Fi, and set Mission Planner's UDP mirror destination to the tracker IP and port above (default `10.0.0.50:14552`). Ensure the static IP is on the backpack's subnet and does not conflict with another device. The tracker waits for Wi-Fi and does not switch sources if Mission Planner telemetry is absent or stops; stale telemetry causes the tracker to park.
+For `GCS`, connect Mission Planner and the tracker to the backpack Wi-Fi. With the tested settings, configure Mission Planner to broadcast its UDP mirror to `10.0.0.255:14552`; the tracker listens on port `14552` using its local static IP `10.0.0.50`. Ensure the static IP is on the backpack's subnet and does not conflict with another device. The tracker waits for Wi-Fi and does not switch sources if Mission Planner telemetry is absent or stops; stale telemetry causes the tracker to park.
+
+The tracker prints the size and sender address of the first GCS UDP packet, independently of whether it decodes as MAVLink. Send `MAVLINK_STATS` to check packet and decode counts. Receiving packets does not by itself establish that usable position messages are arriving.
 
 For `BACKPACK`, the tracker uses DHCP and listens on port `14550`. If Wi-Fi connection or UDP initialization fails at startup, it falls back to the wired backpack UART as before.
 
